@@ -49,6 +49,52 @@ Denials surface as MCP tool errors with a clear message — the call never
 leaves the gateway. Exit path: policy errors map to exit code 6 in the CLI
 context.
 
+## Structured error contract
+
+Every failing `tools/call` returns a tool-level error with **both** a human
+message and machine-readable data, so client libraries branch on a stable
+enum instead of parsing prose.
+
+```jsonc
+// content[0].text  — what MCP clients render
+"upstream `filesystem` unavailable: connection refused"
+
+// structuredContent — what SDKs parse
+{
+  "code": "upstream_unavailable",
+  "message": "upstream `filesystem` unavailable: connection refused",
+  "retryable": true,
+  "exit_code": 1,
+  "server": "filesystem",   // present when known
+  "tool": "read_file"       // present when known
+}
+```
+
+| `code` | Meaning | Retryable | CLI exit |
+| --- | --- | --- | --- |
+| `unknown_tool` | public name isn't `{server}__{tool}` | no | 5 |
+| `server_not_found` | server not routed / not in profile | no | 5 |
+| `policy_denied` | allow/deny list rejected the call | no | 6 |
+| `confirmation_required` | server needs interactive confirmation | no | 6 |
+| `upstream_unavailable` | unreachable, not connected, or failed to start | **yes** | 1 |
+| `shutting_down` | gateway is draining | **yes** | 1 |
+| `concurrency_saturated` | semaphore waited out its timeout | **yes** | 7 |
+| `timeout` | upstream exceeded `call_timeout` | no | 7 |
+| `upstream_error` | upstream answered with an error | no | 1 |
+
+Notes for SDK authors:
+
+- `retryable: true` means *the identical call may be worth repeating*;
+  `false` means retrying will reproduce the failure. `policy_denied` and
+  `confirmation_required` are never retried.
+- `exit_code` mirrors what the CLI reports for the same condition
+  (`cerberus` process exit codes), so the wire and process contracts agree.
+- Field names are camelCase on the wire (`structuredContent`, `isError`);
+  the `code` values are snake_case and stable.
+- `call_tool` failures are tool-level errors (`isError: true` inside a
+  `Complete` response), not JSON-RPC protocol errors — the request was valid
+  and routed, execution is what failed.
+
 ## Limits and safety
 
 - A semaphore caps concurrent upstream calls (`concurrency`).

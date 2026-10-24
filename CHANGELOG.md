@@ -26,4 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (stdio or streamable HTTP on loopback), with tool routing
   (`{server}__{tool}`), allow/deny policy enforcement, concurrency limits,
   call timeouts, and secret redaction.
+- Structured error contract on the gateway: every `tools/call` failure
+  carries `structuredContent` with a stable `code`, `message`, `retryable`,
+  `exit_code`, and `server`/`tool`/`reason` context. Codes are enum-checked
+  and aligned with CLI exit codes (see `docs/gateway.md`), giving SDKs a
+  machine-readable alternative to parsing human error text.
 - Shell completions for bash, zsh, fish, elvish, and PowerShell.

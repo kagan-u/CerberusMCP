@@ -149,6 +149,11 @@ The gateway connects to upstreams on demand, aggregates their tools under
 per-call timeout. It binds loopback only unless `--allow-remote` is combined
 with an auth token.
 
+Failures come back as tool-level errors carrying a stable `code` in
+`structuredContent` (`policy_denied`, `upstream_unavailable`, `timeout`, …)
+with `retryable` and `exit_code` — the machine-readable contract SDKs build
+on. See [`docs/gateway.md`](docs/gateway.md).
+
 ## Commands
 
 ```

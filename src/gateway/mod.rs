@@ -46,6 +46,135 @@ const DEFAULT_MAX_CONCURRENCY: usize = 32;
 const SEPARATOR_NOTE: &str = "tools are named {server}__{tool}";
 
 // ---------------------------------------------------------------------------
+// Structured error contract
+// ---------------------------------------------------------------------------
+
+/// Machine-readable failure codes emitted by the gateway on `tools/call`.
+///
+/// These are the SDK-facing half of the gateway contract. Every error result
+/// carries this `code` inside `structuredContent` alongside a human-readable
+/// message in `content`, so client libraries branch on a stable enum instead
+/// of parsing prose. Codes align with [`crate::error::ExitCode`] values that
+/// the CLI reports for the same condition, and with `retryable`, which tells
+/// an SDK whether reconnecting or waiting can help.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayErrorCode {
+    /// The public tool name could not be split into `server` and `tool`.
+    UnknownTool,
+    /// No such server is routed by this gateway (or not in the active profile).
+    ServerNotFound,
+    /// Server policy (allow/deny lists) rejected the call.
+    PolicyDenied,
+    /// The server requires an interactive confirmation this build can't do.
+    ConfirmationRequired,
+    /// The upstream server is unreachable, not connected, or failed to start.
+    UpstreamUnavailable,
+    /// The gateway is shutting down.
+    ShuttingDown,
+    /// The concurrency semaphore was saturated within the timeout.
+    ConcurrencySaturated,
+    /// The upstream did not answer within the call timeout.
+    Timeout,
+    /// The upstream answered, but with an error.
+    UpstreamError,
+}
+
+impl GatewayErrorCode {
+    /// Stable snake_case spelling sent on the wire.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GatewayErrorCode::UnknownTool => "unknown_tool",
+            GatewayErrorCode::ServerNotFound => "server_not_found",
+            GatewayErrorCode::PolicyDenied => "policy_denied",
+            GatewayErrorCode::ConfirmationRequired => "confirmation_required",
+            GatewayErrorCode::UpstreamUnavailable => "upstream_unavailable",
+            GatewayErrorCode::ShuttingDown => "shutting_down",
+            GatewayErrorCode::ConcurrencySaturated => "concurrency_saturated",
+            GatewayErrorCode::Timeout => "timeout",
+            GatewayErrorCode::UpstreamError => "upstream_error",
+        }
+    }
+
+    /// Whether an SDK may usefully retry the identical call.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            GatewayErrorCode::UpstreamUnavailable
+                | GatewayErrorCode::ShuttingDown
+                | GatewayErrorCode::ConcurrencySaturated
+        )
+    }
+
+    /// The CLI exit code the same condition maps to.
+    ///
+    /// Keeps the wire contract and the process contract from drifting: a
+    /// `policy_denied` tool error and `exit 6` from the CLI are the same
+    /// condition seen from two sides.
+    pub fn exit_code(&self) -> crate::error::ExitCode {
+        use crate::error::ExitCode as E;
+        use GatewayErrorCode::*;
+        match self {
+            UnknownTool | ServerNotFound => E::NotFound,
+            PolicyDenied | ConfirmationRequired => E::PolicyDenied,
+            Timeout | ConcurrencySaturated => E::Timeout,
+            UpstreamUnavailable | ShuttingDown | UpstreamError => E::Failure,
+        }
+    }
+}
+
+/// Build a tool-level error carrying both a human message and structured data.
+///
+/// `content` stays prose so MCP clients render something readable;
+/// `structured_content` carries `code`, `message`, `retryable`, `exit_code`
+/// and, when known, `server` / `tool` / `reason` for SDK branching.
+fn tool_error(
+    code: GatewayErrorCode,
+    message: impl Into<String>,
+    fields: serde_json::Map<String, serde_json::Value>,
+) -> rmcp::model::CallToolResponse {
+    let message = message.into();
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "code".into(),
+        serde_json::Value::String(code.as_str().into()),
+    );
+    payload.insert("message".into(), serde_json::Value::String(message.clone()));
+    payload.insert(
+        "retryable".into(),
+        serde_json::Value::Bool(code.is_retryable()),
+    );
+    payload.insert(
+        "exit_code".into(),
+        serde_json::Value::from(code.exit_code() as u8),
+    );
+    for (k, v) in fields {
+        payload.entry(k).or_insert(v);
+    }
+
+    let mut result = CallToolResult::error(vec![ContentBlock::text(message)]);
+    result.structured_content = Some(serde_json::Value::Object(payload));
+    result.into()
+}
+
+/// Convenience: `tool_error` with only server/tool context.
+fn tool_error_for(
+    code: GatewayErrorCode,
+    message: impl Into<String>,
+    server: Option<&str>,
+    tool: Option<&str>,
+) -> rmcp::model::CallToolResponse {
+    let mut extra = serde_json::Map::new();
+    if let Some(s) = server {
+        extra.insert("server".into(), s.into());
+    }
+    if let Some(t) = tool {
+        extra.insert("tool".into(), t.into());
+    }
+    tool_error(code, message, extra)
+}
+
+// ---------------------------------------------------------------------------
 // Upstream management
 // ---------------------------------------------------------------------------
 
@@ -325,10 +454,13 @@ impl ServerHandler for GatewayHandler {
         let correlation = uuid::Uuid::new_v4().to_string();
 
         let Some((server, tool)) = split_public_name(&public_name) else {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "unknown tool `{public_name}` ({SEPARATOR_NOTE})"
-            ))])
-            .into());
+            let mut extra = serde_json::Map::new();
+            extra.insert("tool".into(), public_name.as_str().into());
+            return Ok(tool_error(
+                GatewayErrorCode::UnknownTool,
+                format!("unknown tool `{public_name}` ({SEPARATOR_NOTE})"),
+                extra,
+            ));
         };
         let (server, tool) = (server.to_string(), tool.to_string());
 
@@ -336,17 +468,24 @@ impl ServerHandler for GatewayHandler {
         {
             let policies = self.state.policies.read().await;
             let Some(p) = policies.get(&server) else {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "server `{server}` is not available through this gateway"
-                ))])
-                .into());
+                return Ok(tool_error_for(
+                    GatewayErrorCode::ServerNotFound,
+                    format!("server `{server}` is not available through this gateway"),
+                    Some(&server),
+                    Some(&tool),
+                ));
             };
             if let policy::Decision::Deny { reason } = policy::evaluate(p, &tool) {
                 tracing::warn!(%correlation, %server, %tool, %reason, "policy denied");
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "policy denied: {reason}"
-                ))])
-                .into());
+                let mut extra = serde_json::Map::new();
+                extra.insert("server".into(), server.as_str().into());
+                extra.insert("tool".into(), tool.as_str().into());
+                extra.insert("reason".into(), reason.as_str().into());
+                return Ok(tool_error(
+                    GatewayErrorCode::PolicyDenied,
+                    format!("policy denied: {reason}"),
+                    extra,
+                ));
             }
         }
 
@@ -354,12 +493,16 @@ impl ServerHandler for GatewayHandler {
         {
             let confirmations = self.state.confirmations.read().await;
             if confirmations.get(&server).copied().unwrap_or(false) {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "server `{server}` requires confirmation for tool calls; this gateway \
-                     build does not implement an interactive confirmation channel — call \
-                     the tool directly or relax `require_confirmation` in the registry"
-                ))])
-                .into());
+                return Ok(tool_error_for(
+                    GatewayErrorCode::ConfirmationRequired,
+                    format!(
+                        "server `{server}` requires confirmation for tool calls; this gateway \
+                         build does not implement an interactive confirmation channel — call \
+                         the tool directly or relax `require_confirmation` in the registry"
+                    ),
+                    Some(&server),
+                    Some(&tool),
+                ));
             }
         }
 
@@ -367,40 +510,46 @@ impl ServerHandler for GatewayHandler {
         if let Err(e) = self.ensure_connected(&server).await {
             let msg = self.redact(&e.to_string());
             tracing::error!(%correlation, %server, error = %msg, "upstream unavailable");
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "upstream `{server}` unavailable: {msg}"
-            ))])
-            .into());
+            let mut extra = serde_json::Map::new();
+            extra.insert("server".into(), server.as_str().into());
+            extra.insert("detail".into(), msg.as_str().into());
+            return Ok(tool_error(
+                GatewayErrorCode::UpstreamUnavailable,
+                format!("upstream `{server}` unavailable: {msg}"),
+                extra,
+            ));
         }
 
         let _permit = tokio::select! {
             permit = self.state.semaphore.clone().acquire_owned() => match permit {
                 Ok(p) => p,
                 Err(_) => {
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(
-                        "gateway is shutting down".to_string()
-                    )]).into());
+                    return Ok(tool_error(
+                        GatewayErrorCode::ShuttingDown,
+                        "gateway is shutting down",
+                        serde_json::Map::new(),
+                    ));
                 }
             },
             _ = tokio::time::sleep(self.state.call_timeout) => {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(
-                    "gateway concurrency limit saturated; retry shortly".to_string()
-                )]).into());
+                return Ok(tool_error(
+                    GatewayErrorCode::ConcurrencySaturated,
+                    "gateway concurrency limit saturated; retry shortly",
+                    serde_json::Map::new(),
+                ));
             }
         };
 
         let upstreams = self.state.upstreams.lock().await;
-        let Some(upstream) = upstreams.get(&server) else {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "server `{server}` is not connected"
-            ))])
-            .into());
-        };
-        let Some(service) = upstream.service.as_ref() else {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "server `{server}` is not connected"
-            ))])
-            .into());
+        let upstream = upstreams.get(&server);
+        let service = upstream.and_then(|u| u.service.as_ref());
+        let Some(service) = service else {
+            return Ok(tool_error_for(
+                GatewayErrorCode::UpstreamUnavailable,
+                format!("server `{server}` is not connected"),
+                Some(&server),
+                Some(&tool),
+            ));
         };
 
         let params = CallToolRequestParams::new(tool.clone())
@@ -413,21 +562,34 @@ impl ServerHandler for GatewayHandler {
         match result {
             Err(_) => {
                 tracing::warn!(%correlation, %server, %tool, elapsed_ms = elapsed.as_millis() as u64, "timeout");
-                Ok(
-                    CallToolResult::error(vec![ContentBlock::text(self.redact(&format!(
+                let mut extra = serde_json::Map::new();
+                extra.insert("server".into(), server.as_str().into());
+                extra.insert("tool".into(), tool.as_str().into());
+                extra.insert(
+                    "timeout_ms".into(),
+                    serde_json::Value::from(timeout.as_millis() as u64),
+                );
+                Ok(tool_error(
+                    GatewayErrorCode::Timeout,
+                    self.redact(&format!(
                         "tool `{tool}` on server `{server}` timed out after {} ms",
                         timeout.as_millis()
-                    )))])
-                    .into(),
-                )
+                    )),
+                    extra,
+                ))
             }
             Ok(Err(e)) => {
                 let msg = self.redact(&e.to_string());
                 tracing::warn!(%correlation, %server, %tool, elapsed_ms = elapsed.as_millis() as u64, error = %msg, "upstream error");
-                Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "upstream error from `{server}`: {msg}"
-                ))])
-                .into())
+                let mut extra = serde_json::Map::new();
+                extra.insert("server".into(), server.as_str().into());
+                extra.insert("tool".into(), tool.as_str().into());
+                extra.insert("detail".into(), msg.as_str().into());
+                Ok(tool_error(
+                    GatewayErrorCode::UpstreamError,
+                    format!("upstream error from `{server}`: {msg}"),
+                    extra,
+                ))
             }
             Ok(Ok(result)) => {
                 tracing::info!(%correlation, %server, %tool, elapsed_ms = elapsed.as_millis() as u64, "ok");
@@ -866,11 +1028,208 @@ pub fn validate_config(store: &RegistryStore, profile: Option<&str>) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ExitCode;
+    use rmcp::model::CallToolResponse;
 
     #[test]
     fn constant_time_eq_works() {
         assert!(constant_time_eq(b"abc", b"abc"));
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
+    }
+
+    fn payload_of(response: CallToolResponse) -> serde_json::Value {
+        match response {
+            CallToolResponse::Complete(result) => {
+                assert_eq!(result.is_error, Some(true));
+                assert_eq!(result.content.len(), 1);
+                result
+                    .structured_content
+                    .expect("error results must carry structured content")
+            }
+            other => panic!("expected Complete response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_error_payload_is_machine_readable() {
+        let mut extra = serde_json::Map::new();
+        extra.insert("server".into(), "github".into());
+        extra.insert("tool".into(), "search_repos".into());
+        extra.insert("reason".into(), "deny pattern matched".into());
+
+        let payload = payload_of(tool_error(
+            GatewayErrorCode::PolicyDenied,
+            "policy denied: deny pattern matched",
+            extra,
+        ));
+
+        assert_eq!(payload["code"], "policy_denied");
+        assert_eq!(payload["retryable"], false);
+        assert_eq!(payload["exit_code"], ExitCode::PolicyDenied as u8);
+        assert_eq!(payload["server"], "github");
+        assert_eq!(payload["tool"], "search_repos");
+        assert_eq!(payload["reason"], "deny pattern matched");
+        assert!(
+            payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("policy denied"),
+            "human message must stay in structured payload too"
+        );
+    }
+
+    #[test]
+    fn tool_error_for_adds_server_and_tool_only_when_known() {
+        let payload = payload_of(tool_error_for(
+            GatewayErrorCode::Timeout,
+            "timed out",
+            Some("filesystem"),
+            Some("read_file"),
+        ));
+        assert_eq!(payload["code"], "timeout");
+        assert_eq!(payload["server"], "filesystem");
+        assert_eq!(payload["tool"], "read_file");
+
+        let payload = payload_of(tool_error(
+            GatewayErrorCode::ShuttingDown,
+            "gateway is shutting down",
+            serde_json::Map::new(),
+        ));
+        assert_eq!(payload["code"], "shutting_down");
+        assert!(payload.get("server").is_none());
+        assert!(payload.get("tool").is_none());
+    }
+
+    /// The wire spelling of every code is a stability contract with the SDKs.
+    #[test]
+    fn error_codes_serialize_as_stable_snake_case() {
+        let all = [
+            (GatewayErrorCode::UnknownTool, "unknown_tool"),
+            (GatewayErrorCode::ServerNotFound, "server_not_found"),
+            (GatewayErrorCode::PolicyDenied, "policy_denied"),
+            (
+                GatewayErrorCode::ConfirmationRequired,
+                "confirmation_required",
+            ),
+            (
+                GatewayErrorCode::UpstreamUnavailable,
+                "upstream_unavailable",
+            ),
+            (GatewayErrorCode::ShuttingDown, "shutting_down"),
+            (
+                GatewayErrorCode::ConcurrencySaturated,
+                "concurrency_saturated",
+            ),
+            (GatewayErrorCode::Timeout, "timeout"),
+            (GatewayErrorCode::UpstreamError, "upstream_error"),
+        ];
+        for (code, expected) in all {
+            assert_eq!(code.as_str(), expected);
+            assert_eq!(
+                serde_json::to_value(code).unwrap(),
+                serde_json::Value::String(expected.to_string()),
+                "serde and as_str() must agree"
+            );
+            // Round-trip: SDKs must be able to parse what we emit.
+            let parsed: GatewayErrorCode =
+                serde_json::from_value(serde_json::json!(expected)).unwrap();
+            assert_eq!(parsed, code);
+        }
+    }
+
+    /// Wire codes and CLI exit codes describe the same conditions.
+    #[test]
+    fn exit_codes_align_with_cli_contract() {
+        use GatewayErrorCode as C;
+        assert_eq!(C::UnknownTool.exit_code(), ExitCode::NotFound);
+        assert_eq!(C::ServerNotFound.exit_code(), ExitCode::NotFound);
+        assert_eq!(C::PolicyDenied.exit_code(), ExitCode::PolicyDenied);
+        assert_eq!(C::ConfirmationRequired.exit_code(), ExitCode::PolicyDenied);
+        assert_eq!(C::Timeout.exit_code(), ExitCode::Timeout);
+        assert_eq!(
+            C::ConcurrencySaturated.exit_code(),
+            ExitCode::Timeout,
+            "a saturated gateway is a wait-too-long condition, not a hard failure"
+        );
+        assert_eq!(C::UpstreamUnavailable.exit_code(), ExitCode::Failure);
+        assert_eq!(C::ShuttingDown.exit_code(), ExitCode::Failure);
+        assert_eq!(C::UpstreamError.exit_code(), ExitCode::Failure);
+    }
+
+    /// Only transient conditions may invite a retry from an SDK.
+    #[test]
+    fn retryable_is_limited_to_transient_failures() {
+        use GatewayErrorCode as C;
+        assert!(C::UpstreamUnavailable.is_retryable());
+        assert!(C::ShuttingDown.is_retryable());
+        assert!(C::ConcurrencySaturated.is_retryable());
+        assert!(!C::PolicyDenied.is_retryable());
+        assert!(!C::ConfirmationRequired.is_retryable());
+        assert!(!C::UnknownTool.is_retryable());
+        assert!(!C::ServerNotFound.is_retryable());
+        assert!(!C::Timeout.is_retryable());
+        assert!(!C::UpstreamError.is_retryable());
+    }
+
+    /// The exact JSON an SDK parses off the wire. If rmcp ever renames the
+    /// envelope keys, this fails before an SDK silently starts reading nulls.
+    #[test]
+    fn wire_envelope_uses_camel_case_keys() {
+        let response = tool_error_for(
+            GatewayErrorCode::UpstreamUnavailable,
+            "upstream `filesystem` unavailable",
+            Some("filesystem"),
+            Some("read_file"),
+        );
+
+        let (serialized, text) = match response {
+            CallToolResponse::Complete(result) => {
+                let text = match &result.content[0] {
+                    ContentBlock::Text(t) => t.text.clone(),
+                    other => panic!("expected text block, got {other:?}"),
+                };
+                (serde_json::to_value(result).unwrap(), text)
+            }
+            other => panic!("expected Complete response, got {other:?}"),
+        };
+
+        // Envelope keys are camelCase per the MCP schema.
+        assert_eq!(serialized["isError"], true);
+        assert!(serialized.get("resultType").is_some());
+        assert!(serialized.get("structuredContent").is_some());
+        // The old snake_case spellings must not appear.
+        assert!(serialized.get("is_error").is_none());
+        assert!(serialized.get("structured_content").is_none());
+
+        let sc = &serialized["structuredContent"];
+        assert_eq!(sc["code"], "upstream_unavailable");
+        assert_eq!(sc["server"], "filesystem");
+        assert_eq!(sc["tool"], "read_file");
+        assert_eq!(sc["retryable"], true);
+        assert_eq!(sc["exit_code"], ExitCode::Failure as u8);
+        assert_eq!(sc["message"], "upstream `filesystem` unavailable");
+
+        // Human-readable text still rides in content for MCP clients that
+        // only render content blocks.
+        assert_eq!(text, "upstream `filesystem` unavailable");
+    }
+
+    /// Codes survive a full serialize/deserialize round-trip nested inside
+    /// structured content, which is how an SDK actually reads them.
+    #[test]
+    fn codes_round_trip_from_structured_content() {
+        let response = tool_error(
+            GatewayErrorCode::PolicyDenied,
+            "policy denied: deny_tools matched",
+            serde_json::Map::new(),
+        );
+        let wire = match response {
+            CallToolResponse::Complete(result) => serde_json::to_value(result).unwrap(),
+            other => panic!("expected Complete, got {other:?}"),
+        };
+        let code: GatewayErrorCode =
+            serde_json::from_value(wire["structuredContent"]["code"].clone()).unwrap();
+        assert_eq!(code, GatewayErrorCode::PolicyDenied);
     }
 }
