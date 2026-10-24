@@ -22,6 +22,20 @@ servers:
     timeout_ms: 30000
     policy:
       deny_tools: []
+    # Install provenance: written by `cerberus install`, read by
+    # `cerberus doctor`. Never used by the gateway or by client adapters.
+    source:
+      kind: npm
+      package: "@modelcontextprotocol/server-filesystem"
+      version: "0.6.2"
+      runner: npx
+      args: ["-y"]
+      homepage: https://github.com/modelcontextprotocol/servers
+      env:
+        - name: SOME_API_KEY
+          required: false
+          secret: true
+          description: Optional credential the server accepts
 
   github:
     description: GitHub MCP remote server
@@ -53,6 +67,11 @@ servers:
       allow_tools: []
       deny_tools: ["memory_admin_*"]
       require_confirmation: false
+    source:
+      kind: npm
+      package: "@modelcontextprotocol/server-memory"
+      runner: npx
+      args: ["-y"]
 
 profiles:
   minimal:

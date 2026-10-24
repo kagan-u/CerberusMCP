@@ -1,5 +1,6 @@
 //! Registry load/save and CRUD operations.
 
+pub mod catalog;
 pub mod migrate;
 pub mod schema;
 pub mod validate;
@@ -332,6 +333,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         };
         store.add_server("test", def.clone()).unwrap();
         store.save().unwrap();

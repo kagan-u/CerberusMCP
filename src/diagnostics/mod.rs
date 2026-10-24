@@ -136,6 +136,32 @@ pub async fn doctor(
                         }
                     }
 
+                    // Install provenance: variables the server documents as
+                    // required. Already-bound ones are covered by the check
+                    // above, so this only reports truly unbound requirements.
+                    if let Some(source) = &def.source {
+                        let bound: Vec<&str> = match &def.transport {
+                            crate::registry::schema::Transport::Stdio { env, .. } => {
+                                env.keys().map(String::as_str).collect()
+                            }
+                            crate::registry::schema::Transport::Http { .. } => Vec::new(),
+                        };
+                        for variable in source.env.iter().filter(|v| v.required) {
+                            if std::env::var_os(&variable.name).is_none()
+                                && !bound.contains(&variable.name.as_str())
+                            {
+                                diagnostics.push(Diagnostic {
+                                    severity: Severity::Warning,
+                                    area: "server".into(),
+                                    message: format!(
+                                        "server `{name}`: source requires unset variable `{}`",
+                                        variable.name
+                                    ),
+                                });
+                            }
+                        }
+                    }
+
                     if opts.probe_servers && def.enabled {
                         if let crate::registry::schema::Transport::Stdio { .. } = &def.transport {
                             match process::probe_stdio_liveness(

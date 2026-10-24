@@ -57,6 +57,10 @@ axum = "0.8"
 tokio-util = { version = "0.7", features = ["rt"] }
 clap_complete = "4"
 http = "1"
+# Used for the official MCP Registry client (`search`/`install`). Already in
+# the tree via rmcp's streamable-http transport, so this adds no new build.
+# Default features use rustls, not OpenSSL.
+reqwest = { version = "0.13", features = ["json"] }
 
 [dev-dependencies]
 assert_cmd = "2"

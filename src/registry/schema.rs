@@ -76,6 +76,80 @@ pub enum ExecutionMode {
     Gateway,
 }
 
+/// Where a server comes from: install provenance for `cerberus search`,
+/// `cerberus install`, and `cerberus doctor`.
+///
+/// The gateway and the client adapters never read this block — it only
+/// records how the entry could be re-created or verified outside Cerberus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceDef {
+    pub kind: SourceKind,
+    /// Package identifier (`npm`/`pypi`) or executable name (`binary`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Version pin or requirement (e.g. `0.6.2`, `^1.2`, `>=1,<2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Repository or homepage for humans.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
+    /// Runtime that launches the package: `npx`, `uvx`, `pnpm dlx`, ...
+    /// Defaults to `npx` for `npm` and `uvx` for `pypi` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
+    /// Positional arguments given to the runner before the package
+    /// (e.g. `-y` for npx).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Source location for `git` sources.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Git ref (branch, tag, or commit) for `git` sources.
+    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    /// Environment variables the server documents. `cerberus doctor`
+    /// reports which of these are missing from the launch environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<SourceEnv>,
+}
+
+/// Packaging system a source comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    Npm,
+    Pypi,
+    Git,
+    Binary,
+}
+
+/// One environment variable a server documents needing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceEnv {
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub required: bool,
+    #[serde(default)]
+    pub secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl SourceDef {
+    /// Runtime that would launch this source when the registry entry does
+    /// not pin one. `None` for sources whose launcher is the transport
+    /// itself (`binary`) or a clone step (`git`).
+    pub fn default_runner(&self) -> Option<&'static str> {
+        match self.kind {
+            SourceKind::Npm => Some("npx"),
+            SourceKind::Pypi => Some("uvx"),
+            SourceKind::Git | SourceKind::Binary => None,
+        }
+    }
+}
+
 /// A registered MCP server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,6 +173,9 @@ pub struct ServerDef {
     /// Optional human-readable description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Install provenance. Ignored by the gateway and by client adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceDef>,
 }
 
 fn default_true() -> bool {

@@ -102,19 +102,33 @@ pub fn build_command(
 }
 
 /// Probe that an executable exists (without running it).
+///
+/// On Windows the bare name is not enough: launchers such as `npx` are
+/// `npx.cmd`, so `PATHEXT` extensions are tried in order.
 pub fn executable_exists(command: &str) -> bool {
     let path = PathBuf::from(command);
     if path.is_absolute() || command.contains('/') || command.contains('\\') {
         return path.exists();
     }
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                let candidate = dir.join(command);
-                candidate.exists()
-            })
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let mut extensions: Vec<std::ffi::OsString> = vec![std::ffi::OsString::new()];
+    if cfg!(windows) {
+        let pathtext = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".into());
+        extensions.extend(
+            pathtext
+                .split(';')
+                .filter(|ext| !ext.is_empty())
+                .map(std::ffi::OsString::from),
+        );
+    }
+    std::env::split_paths(&paths).any(|dir| {
+        extensions.iter().any(|ext| {
+            let candidate = dir.join(format!("{command}{}", ext.to_string_lossy()));
+            candidate.exists()
         })
-        .unwrap_or(false)
+    })
 }
 
 /// Run a stdio server command with a hard timeout and capture whether it
@@ -171,6 +185,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         }
     }
 

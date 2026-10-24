@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `cerberus search <query>` against the official MCP Registry
+  (`registry.modelcontextprotocol.io`): deduplicated by newest published
+  version, `--limit`, `--json`, and `--offline` replay from a local cache
+  (`registry-cache.json`).
+- `cerberus install <name|file>`: resolves a registry record (or a saved JSON
+  record), prefers a launchable `stdio` package over a hosted endpoint, derives
+  a local server name, and writes only the registry — `sync` stays a separate
+  explicit step. `--check` verifies the launcher resolves on `PATH` (honoring
+  `PATHEXT` on Windows), `--dry-run` prints without writing, `--name`,
+  `--tags`, and `--disabled` control the entry. Unsupported packaging systems
+  fail with exit code `8`.
+- `source` block on server entries: install provenance (`kind`, `package`,
+  `version`, `runner`, `homepage`, `url`/`ref`, documented `env`
+  requirements), validated per kind and reported by `cerberus doctor`.
+  The gateway and client adapters never read it. Documented in
+  `docs/registry.md`.
+- `CERBERUS_REGISTRY_URL` overrides the registry endpoint.
+- `server inspect` now includes the `source` block in `--json` and in its
+  text output.
+
+### Fixed
+
+- Windows: `CerberusPaths::resolve` now honors `CERBERUS_CONFIG_DIR` /
+  `CERBERUS_DATA_DIR` before consulting `ProjectDirs`, so sandboxed runs work
+  even when no OS profile folder can be resolved.
+- Windows: `home_dir()` prefers `USERPROFILE`/`HOME` over `BaseDirs`, which
+  resolves the profile through `SHGetKnownFolderPath` and ignores those
+  variables — sandboxing was silently ineffective.
+
 ## [0.1.0] - 2026-10-10
 
 ### Added

@@ -456,6 +456,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         }
     }
 
@@ -489,6 +490,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         };
         let servers = BTreeMap::from([("remote".to_string(), remote)]);
         let managed = ClientManagedState::default();

@@ -455,6 +455,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         }
     }
 

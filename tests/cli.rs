@@ -495,3 +495,353 @@ fn completions_generate_for_bash_and_zsh() {
             .stdout(predicate::str::contains("cerberus"));
     }
 }
+
+// ---------------------------------------------------------------------------
+// registry search / install
+// ---------------------------------------------------------------------------
+
+/// Minimal stand-in for the official MCP Registry: one route serving a fixed
+/// body on loopback, shut down when the guard drops. Keeps these tests
+/// deterministic without touching the network.
+struct RegistryFixture {
+    url: String,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RegistryFixture {
+    fn spawn(body: &'static str) -> Self {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<u16>();
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio runtime");
+            runtime.block_on(async move {
+                let app = axum::Router::new()
+                    .route("/servers", axum::routing::get(move || async move { body }));
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind loopback");
+                let port = listener.local_addr().expect("local addr").port();
+                ready_tx.send(port).expect("report port");
+                let _ = axum::serve(listener, app)
+                    .with_graceful_shutdown(async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await;
+            });
+        });
+        let port = ready_rx.recv().expect("fixture port");
+        Self {
+            url: format!("http://127.0.0.1:{port}"),
+            shutdown: Some(shutdown_tx),
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for RegistryFixture {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Two published versions of one server plus an unrelated server: search must
+/// collapse them to two results and keep `0.2.0`.
+const SEARCH_FIXTURE: &str = r#"{
+  "servers": [
+    {"server": {"name": "com.example/server-filesystem", "version": "0.1.0",
+                "description": "old", "packages": [
+                  {"registryType": "npm", "identifier": "@example/fs", "version": "0.1.0",
+                   "runtimeHint": "npx", "transport": {"type": "stdio"}}]}},
+    {"server": {"name": "com.example/server-filesystem", "version": "0.2.0",
+                "description": "Read and write files",
+                "repository": {"url": "https://github.com/example/fs"},
+                "packages": [
+                  {"registryType": "npm", "identifier": "@example/fs", "version": "0.2.0",
+                   "runtimeHint": "npx", "transport": {"type": "stdio"},
+                   "runtimeArguments": [{"value": "-y", "type": "positional"}],
+                   "packageArguments": [{"value": "/data", "type": "positional"}],
+                   "environmentVariables": [
+                     {"name": "API_KEY", "isRequired": true, "isSecret": true}]}]}},
+    {"server": {"name": "com.example/other-server", "version": "1.0.0",
+                "description": "something else", "packages": [
+                  {"registryType": "npm", "identifier": "@example/other", "version": "1.0.0",
+                   "runtimeHint": "npx", "transport": {"type": "stdio"}}]}}
+  ],
+  "metadata": {"count": 3}
+}"#;
+
+const UNSUPPORTED_FIXTURE: &str = r#"{
+  "servers": [
+    {"server": {"name": "com.example/windows-only", "version": "1.0.0",
+                "packages": [
+                  {"registryType": "nuget", "identifier": "Example.Nuget",
+                   "version": "1.0.0", "transport": {"type": "stdio"}}]}}
+  ]
+}"#;
+
+fn record_file(sb: &Sandbox, name: &str, body: &str) -> PathBuf {
+    let path = sb.path(name);
+    fs::write(&path, body).expect("write record");
+    path
+}
+
+const LOCAL_RECORD: &str = r#"{
+  "name": "com.example/server-filesystem",
+  "description": "Local filesystem",
+  "version": "0.6.2",
+  "repository": {"url": "https://github.com/example/fs"},
+  "packages": [
+    {"registryType": "npm", "identifier": "@example/server-filesystem", "version": "0.6.2",
+     "runtimeHint": "npx", "transport": {"type": "stdio"},
+     "runtimeArguments": [{"value": "-y", "type": "positional"}],
+     "packageArguments": [{"type": "named", "name": "allowed-directories",
+                           "isRequired": true, "format": "string"}],
+     "environmentVariables": [
+       {"name": "API_KEY", "isRequired": true, "isSecret": true},
+       {"name": "OPTIONAL", "description": "optional knob"}]}
+  ],
+  "remotes": []
+}"#;
+
+#[test]
+fn search_deduplicates_versions_and_caches_for_offline() {
+    let sb = Sandbox::new();
+    sb.init();
+    let fixture = RegistryFixture::spawn(SEARCH_FIXTURE);
+
+    let out = sb
+        .cmd()
+        .env("CERBERUS_REGISTRY_URL", &fixture.url)
+        .args(["--json", "search", "filesystem"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["count"], 2, "duplicate version rows collapse: {v}");
+    assert_eq!(v["results"][0]["name"], "com.example/server-filesystem");
+    assert_eq!(
+        v["results"][0]["version"], "0.2.0",
+        "newest published version wins: {v}"
+    );
+    assert_eq!(v["results"][0]["kind"], "npm");
+    assert_eq!(v["results"][1]["name"], "com.example/other-server");
+
+    // The result was cached: replay works without the registry URL.
+    sb.cmd()
+        .args(["search", "filesystem", "--offline"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("com.example/other-server"));
+
+    // No cache entry for an unknown query → not found, with a way out.
+    sb.cmd()
+        .args(["search", "never-searched", "--offline"])
+        .assert()
+        .failure()
+        .code(5)
+        .stderr(predicate::str::contains("--offline"));
+}
+
+#[test]
+fn install_from_registry_writes_source_and_validates() {
+    let sb = Sandbox::new();
+    sb.init();
+    let fixture = RegistryFixture::spawn(SEARCH_FIXTURE);
+
+    sb.cmd()
+        .env("CERBERUS_REGISTRY_URL", &fixture.url)
+        .args([
+            "install",
+            "com.example/server-filesystem",
+            "--check",
+            "--tag",
+            "files",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("installed"));
+
+    let yaml = fs::read_to_string(sb.path("config/cerberus.yaml")).expect("registry");
+    assert!(yaml.contains("server-filesystem"), "{yaml}");
+    assert!(yaml.contains("kind: npm"), "{yaml}");
+    assert!(yaml.contains("@example/fs"), "{yaml}");
+    assert!(
+        yaml.contains("name: API_KEY"),
+        "required env is recorded for doctor: {yaml}"
+    );
+    assert!(!yaml.contains("never-searched"));
+
+    sb.cmd()
+        .args(["config", "validate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"));
+
+    // Re-installing the same name is a conflict, not a silent overwrite.
+    sb.cmd()
+        .env("CERBERUS_REGISTRY_URL", &fixture.url)
+        .args(["install", "com.example/server-filesystem"])
+        .assert()
+        .failure()
+        .code(4);
+}
+
+#[test]
+fn install_from_local_record_needs_no_network() {
+    let sb = Sandbox::new();
+    sb.init();
+    record_file(&sb, "record.json", LOCAL_RECORD);
+
+    // No CERBERUS_REGISTRY_URL: the file path short-circuits the registry.
+    sb.cmd()
+        .args([
+            "install",
+            sb.path("record.json").to_str().unwrap(),
+            "--json",
+        ])
+        .assert()
+        .success();
+
+    let out = sb
+        .cmd()
+        .args(["server", "inspect", "server-filesystem", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(v["source"]["kind"], "npm");
+    assert_eq!(v["source"]["package"], "@example/server-filesystem");
+    assert_eq!(v["source"]["runner"], "npx");
+    // The named argument has no value: it must be warned about, never invented.
+    let installed = fs::read_to_string(sb.path("config/cerberus.yaml")).unwrap();
+    assert!(!installed.contains("allowed-directories"), "{installed}");
+}
+
+#[test]
+fn install_dry_run_reports_without_writing() {
+    let sb = Sandbox::new();
+    sb.init();
+    record_file(&sb, "record.json", LOCAL_RECORD);
+
+    sb.cmd()
+        .args([
+            "install",
+            sb.path("record.json").to_str().unwrap(),
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("would install as"));
+
+    let yaml = fs::read_to_string(sb.path("config/cerberus.yaml")).unwrap();
+    assert!(
+        !yaml.contains("server-filesystem"),
+        "nothing written:\n{yaml}"
+    );
+
+    sb.cmd()
+        .args(["server", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no servers").or(predicate::str::is_empty()));
+}
+
+#[test]
+fn install_rejects_unsupported_package_type() {
+    let sb = Sandbox::new();
+    sb.init();
+    let fixture = RegistryFixture::spawn(UNSUPPORTED_FIXTURE);
+
+    sb.cmd()
+        .env("CERBERUS_REGISTRY_URL", &fixture.url)
+        .args(["install", "com.example/windows-only"])
+        .assert()
+        .failure()
+        .code(8)
+        .stderr(predicate::str::contains("npm and pypi"));
+}
+
+#[test]
+fn doctor_reports_unset_source_requirements() {
+    let sb = Sandbox::new();
+    sb.init();
+    // Hand-written entry: `source` documents a required variable that the
+    // transport does not bind at all.
+    fs::write(
+        sb.path("config/cerberus.yaml"),
+        r#"schema_version: 1
+servers:
+  svc:
+    transport:
+      type: stdio
+      command: npx
+      args: []
+    source:
+      kind: npm
+      package: example-pkg
+      env:
+        - name: CERBERUS_TEST_REQUIRED_VAR
+          required: true
+"#,
+    )
+    .unwrap();
+
+    let out = sb
+        .cmd()
+        .args(["--json", "doctor"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    let messages: Vec<&str> = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter_map(|d| d["message"].as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("CERBERUS_TEST_REQUIRED_VAR")),
+        "source requirement must be reported: {messages:?}"
+    );
+
+    // Set the variable → the diagnostic disappears.
+    let out = sb
+        .cmd()
+        .env("CERBERUS_TEST_REQUIRED_VAR", "set")
+        .args(["--json", "doctor"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    let messages: Vec<&str> = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter_map(|d| d["message"].as_str())
+        .collect();
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m.contains("CERBERUS_TEST_REQUIRED_VAR")),
+        "variable is set now: {messages:?}"
+    );
+}

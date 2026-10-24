@@ -568,6 +568,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         };
         let servers = BTreeMap::from([("mine".to_string(), def)]);
         let managed = ClientManagedState::default();
@@ -618,6 +619,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         };
         if let Transport::Stdio { env, .. } = &mut def.transport {
             env.insert(

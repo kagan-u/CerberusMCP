@@ -13,7 +13,8 @@ use crate::cli::{
 };
 use crate::error::{CerberusError, ExitCode, Result};
 use crate::registry::schema::{
-    EnvValue, ExecutionMode, Profile, Registry, SCHEMA_VERSION, ServerDef, ServerPolicy, Transport,
+    EnvValue, ExecutionMode, Profile, Registry, SCHEMA_VERSION, ServerDef, ServerPolicy, SourceDef,
+    Transport,
 };
 use crate::registry::{RegistryStore, atomic_write, validate};
 
@@ -34,6 +35,26 @@ pub async fn dispatch(ctx: &Ctx, command: Command) -> Result<i32> {
         Command::Backup(c) => cmd_backup(ctx, c).await,
         Command::Profile(c) => cmd_profile(ctx, c).await,
         Command::Gateway(c) => cmd_gateway(ctx, c).await,
+        Command::Search {
+            query,
+            limit,
+            offline,
+            registry,
+        } => cmd_search(ctx, query, limit, offline, registry).await,
+        Command::Install {
+            source,
+            rename,
+            check,
+            dry_run,
+            disabled,
+            tags,
+            registry,
+        } => {
+            cmd_install(
+                ctx, source, rename, check, dry_run, disabled, tags, registry,
+            )
+            .await
+        }
         Command::Doctor { client, probe } => cmd_doctor(ctx, client, probe).await,
         Command::Health => cmd_health(ctx).await,
         Command::Logs { lines } => cmd_logs(ctx, lines).await,
@@ -346,6 +367,7 @@ async fn cmd_server(ctx: &Ctx, command: ServerCommand) -> Result<i32> {
                 startup_timeout_ms,
                 policy: ServerPolicy::default(),
                 description,
+                source: None,
             };
             store.add_server(&name, def.clone())?;
             save_store(ctx, &mut store)?;
@@ -376,6 +398,7 @@ async fn cmd_server(ctx: &Ctx, command: ServerCommand) -> Result<i32> {
                 policy: &'a ServerPolicy,
                 description: Option<&'a str>,
                 env_keys: Vec<String>,
+                source: Option<&'a SourceDef>,
             }
             let env_keys = match &def.transport {
                 Transport::Stdio { env, .. } => env.keys().cloned().collect(),
@@ -393,6 +416,7 @@ async fn cmd_server(ctx: &Ctx, command: ServerCommand) -> Result<i32> {
                 policy: &def.policy,
                 description: def.description.as_deref(),
                 env_keys,
+                source: def.source.as_ref(),
             };
             if ctx.json {
                 ctx.emit_json(&detail);
@@ -414,6 +438,11 @@ async fn cmd_server(ctx: &Ctx, command: ServerCommand) -> Result<i32> {
                 if !def.policy.allow_tools.is_empty() || !def.policy.deny_tools.is_empty() {
                     ctx.status("Allow tools", &def.policy.allow_tools.join(", "));
                     ctx.status("Deny tools", &def.policy.deny_tools.join(", "));
+                }
+                if let Some(source) = &def.source {
+                    let kind = format!("{:?}", source.kind).to_lowercase();
+                    let package = source.package.as_deref().unwrap_or("-");
+                    ctx.status("Source", &format!("{kind} {package}"));
                 }
             }
             Ok(ExitCode::Success as i32)
@@ -482,6 +511,262 @@ async fn set_enabled(ctx: &Ctx, name: &str, enable: bool) -> Result<i32> {
             if enable { "enabled" } else { "disabled" }
         ));
     }
+    Ok(ExitCode::Success as i32)
+}
+
+// ---------------------------------------------------------------------------
+// search / install (official MCP Registry)
+// ---------------------------------------------------------------------------
+
+/// Short descriptor used in listings: package type, `remote`, or `-`.
+fn catalog_kind(server: &crate::registry::catalog::RemoteServer) -> String {
+    if let Some(package) = server.packages.first() {
+        return package.registry_type.clone();
+    }
+    if !server.remotes.is_empty() {
+        return "remote".to_string();
+    }
+    "-".to_string()
+}
+
+async fn cmd_search(
+    ctx: &Ctx,
+    query: String,
+    limit: usize,
+    offline: bool,
+    registry: Option<String>,
+) -> Result<i32> {
+    let limit = limit.clamp(1, 100);
+    let cache_path = crate::registry::catalog::SearchCache::path(&ctx.paths.data_dir);
+
+    let results = if offline {
+        let cache = crate::registry::catalog::SearchCache::load(&cache_path)?;
+        let entry = cache.get(&query).ok_or_else(|| {
+            CerberusError::NotFound(format!(
+                "no cached results for `{query}`; run `cerberus search \"{query}\"` once with \
+                 network access, then retry with --offline"
+            ))
+        })?;
+        entry.results.clone()
+    } else {
+        let client = crate::registry::catalog::RegistryClient::new(registry)?;
+        // Ask for extra rows: one server can occupy several of them, one per
+        // published version, and they collapse during deduplication below.
+        let page = client.search(&query, (limit * 4).min(100), None).await?;
+        let results = page.into_servers();
+        let mut cache = crate::registry::catalog::SearchCache::load(&cache_path)?;
+        cache.save(&cache_path, &query, results.clone());
+        results
+    };
+    // The registry returns one row per published version: collapse them.
+    let results = crate::registry::catalog::dedup_latest(results);
+    let results = {
+        let mut r = results;
+        r.truncate(limit);
+        r
+    };
+
+    if ctx.json {
+        let rows: Vec<serde_json::Value> = results
+            .iter()
+            .map(|server| {
+                serde_json::json!({
+                    "name": server.name,
+                    "kind": catalog_kind(server),
+                    "version": server.version,
+                    "description": server.description,
+                    "homepage": server.repository.as_ref().map(|r| &r.url),
+                    "packages": server.packages.iter().map(|p| p.identifier.clone()).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        ctx.emit_json(&serde_json::json!({
+            "query": query,
+            "count": rows.len(),
+            "offline": offline,
+            "results": rows,
+        }));
+        return Ok(ExitCode::Success as i32);
+    }
+
+    if results.is_empty() {
+        ctx.out(&yellow("no results"));
+        ctx.out(&dim(
+            "try a different query, or check https://registry.modelcontextprotocol.io",
+        ));
+        return Ok(ExitCode::Success as i32);
+    }
+
+    ctx.out(&format!(
+        "{} {}",
+        bold(&format!("{} result(s)", results.len())),
+        dim(&format!("for `{query}`"))
+    ));
+    for server in &results {
+        let version = server.version.as_deref().unwrap_or("-");
+        ctx.out(&format!(
+            "  {}  {}  {}",
+            cyan(&server.name),
+            dim(&catalog_kind(server)),
+            dim(version)
+        ));
+        if let Some(description) = &server.description {
+            let flat: String = description.split_whitespace().collect::<Vec<_>>().join(" ");
+            let short: String = flat.chars().take(100).collect();
+            let suffix = if flat.chars().count() > 100 {
+                "..."
+            } else {
+                ""
+            };
+            ctx.out(&format!("      {short}{suffix}"));
+        }
+    }
+    ctx.out(&dim("\n  install with: cerberus install <name>"));
+    Ok(ExitCode::Success as i32)
+}
+
+/// Load a registry record from a local JSON file or from the registry.
+async fn resolve_registry_source(
+    source: &str,
+    registry: Option<String>,
+) -> Result<crate::registry::catalog::RemoteServer> {
+    use crate::registry::catalog::RemoteServer;
+
+    let path = PathBuf::from(source);
+    if path.is_file() {
+        let text = std::fs::read_to_string(&path).map_err(|source_err| CerberusError::Io {
+            path: path.clone(),
+            source: source_err,
+        })?;
+        #[derive(serde::Deserialize)]
+        struct Envelope {
+            server: RemoteServer,
+        }
+        if let Ok(envelope) = serde_json::from_str::<Envelope>(&text) {
+            return Ok(envelope.server);
+        }
+        return serde_json::from_str(&text).map_err(|e| {
+            CerberusError::Validation(format!(
+                "failed to parse `{}` as a registry record: {e}",
+                path.display()
+            ))
+        });
+    }
+
+    let client = crate::registry::catalog::RegistryClient::new(registry)?;
+    client.fetch_exact(source).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_install(
+    ctx: &Ctx,
+    source: String,
+    rename: Option<String>,
+    check: bool,
+    dry_run: bool,
+    disabled: bool,
+    tags: Vec<String>,
+    registry: Option<String>,
+) -> Result<i32> {
+    let mut store = load_store(ctx)?;
+    let record = resolve_registry_source(&source, registry).await?;
+    let planned = crate::registry::catalog::materialize(&record)?;
+
+    let name = match rename {
+        Some(name) => name,
+        None => crate::registry::catalog::derive_name(&record.name).ok_or_else(|| {
+            CerberusError::Validation(format!(
+                "could not derive a local name from `{}`; pass --name <NAME>",
+                record.name
+            ))
+        })?,
+    };
+    if store.registry.servers.contains_key(&name) {
+        return Err(CerberusError::ServerExists { name });
+    }
+
+    if check {
+        if let Transport::Stdio { command, .. } = &planned.transport {
+            if !crate::process::executable_exists(command) {
+                return Err(CerberusError::Other(format!(
+                    "launcher `{command}` was not found on PATH; install it (e.g. \
+                     `npm install -g {command}`) and retry, or omit --check"
+                )));
+            }
+        }
+    }
+
+    let tags: Vec<String> = tags
+        .iter()
+        .flat_map(|t| t.split(','))
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    let def = ServerDef {
+        enabled: !disabled,
+        transport: planned.transport,
+        mode: None,
+        tags,
+        timeout_ms: None,
+        startup_timeout_ms: None,
+        policy: ServerPolicy::default(),
+        description: planned.description.clone(),
+        source: planned.source.clone(),
+    };
+    validate::validate_server_def(&name, &def)?;
+
+    if dry_run {
+        if ctx.json {
+            ctx.emit_json(&serde_json::json!({
+                "name": name,
+                "registry_name": record.name,
+                "server": def,
+                "warnings": planned.warnings,
+            }));
+        } else {
+            ctx.out(&dim(&format!("# would install as `{name}`")));
+            match serde_yaml::to_string(&def) {
+                Ok(yaml) => ctx.out(yaml.trim_end()),
+                Err(e) => ctx.out(&format!("# entry unavailable: {e}")),
+            }
+            for warning in &planned.warnings {
+                ctx.warn(warning);
+            }
+        }
+        return Ok(ExitCode::Success as i32);
+    }
+
+    store.add_server(&name, def)?;
+    save_store(ctx, &mut store)?;
+
+    if ctx.json {
+        ctx.emit_json(&serde_json::json!({
+            "installed": name,
+            "registry_name": record.name,
+            "enabled": !disabled,
+            "warnings": planned.warnings,
+            "next": ["cerberus sync --apply"],
+        }));
+        return Ok(ExitCode::Success as i32);
+    }
+
+    ctx.out(&format!("{} server `{name}`", green("✓ installed")));
+    ctx.status("registry name", &record.name);
+    if let Some(kind) = planned
+        .source
+        .as_ref()
+        .map(|s| format!("{:?}", s.kind).to_lowercase())
+    {
+        ctx.status("source", &kind);
+    }
+    ctx.status("transport", if disabled { "disabled" } else { "enabled" });
+    for warning in &planned.warnings {
+        ctx.warn(warning);
+    }
+    ctx.out(&dim(
+        "next: cerberus sync --apply   (write client configurations)",
+    ));
     Ok(ExitCode::Success as i32)
 }
 

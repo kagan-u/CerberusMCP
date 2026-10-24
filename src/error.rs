@@ -105,6 +105,15 @@ pub enum CerberusError {
     #[error("gateway error: {0}")]
     Gateway(String),
 
+    /// Generic "not found" for lookups that are not servers, profiles,
+    /// clients, or backups (e.g. no registry record matches a name).
+    #[error("{0}")]
+    NotFound(String),
+
+    /// The official MCP Registry could not be queried or returned garbage.
+    #[error("registry request to {url} failed: {detail}")]
+    RegistryRequest { url: String, detail: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -144,7 +153,8 @@ impl CerberusError {
             | ServerNotFound { .. }
             | ProfileNotFound { .. }
             | ClientNotFound { .. }
-            | BackupNotFound { .. } => ExitCode::NotFound,
+            | BackupNotFound { .. }
+            | NotFound(_) => ExitCode::NotFound,
             ConfigParse { .. } | Validation(_) | UnsupportedSchemaVersion { .. } => {
                 ExitCode::ConfigInvalid
             }

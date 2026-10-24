@@ -104,6 +104,46 @@ pub enum Command {
     #[command(subcommand)]
     Gateway(GatewayCommand),
 
+    /// Search the official MCP registry for installable servers.
+    Search {
+        /// Free-text query: registry name, capability, or keyword.
+        query: String,
+        /// Maximum number of results (1-100).
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Read results from the local cache instead of the network.
+        #[arg(long)]
+        offline: bool,
+        /// Registry base URL (defaults to CERBERUS_REGISTRY_URL or the official registry).
+        #[arg(long, env = "CERBERUS_REGISTRY_URL")]
+        registry: Option<String>,
+    },
+
+    /// Add a server from the official MCP registry to the local registry.
+    Install {
+        /// Registry name (e.g. `com.modelcontextprotocol/server-filesystem`)
+        /// or a path to a saved registry record (JSON).
+        source: String,
+        /// Local registry name (default: derived from the registry name).
+        #[arg(long = "name", value_name = "NAME")]
+        rename: Option<String>,
+        /// Verify the launcher and required environment variables first.
+        #[arg(long)]
+        check: bool,
+        /// Print the entry that would be written without saving it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Register the server disabled (enabled by default).
+        #[arg(long)]
+        disabled: bool,
+        /// Tags to record (comma-separated or repeatable).
+        #[arg(long = "tag", value_name = "TAG")]
+        tags: Vec<String>,
+        /// Registry base URL (defaults to CERBERUS_REGISTRY_URL or the official registry).
+        #[arg(long, env = "CERBERUS_REGISTRY_URL")]
+        registry: Option<String>,
+    },
+
     /// Diagnose configuration, clients, and servers.
     Doctor {
         /// Only check one client.

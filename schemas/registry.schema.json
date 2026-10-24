@@ -49,7 +49,10 @@
         "timeout_ms": { "type": "integer", "minimum": 1 },
         "startup_timeout_ms": { "type": "integer", "minimum": 1 },
         "policy": { "$ref": "#/$defs/policy" },
-        "description": { "type": "string" }
+        "description": { "type": "string" },
+      "source": {
+        "$ref": "#/$defs/source"
+      }
       }
     },
     "stdio": {
@@ -134,6 +137,73 @@
           "description": "Tools that may never be called. Evaluated after allow_tools."
         },
         "require_confirmation": { "type": "boolean", "default": false }
+      }
+    },
+    "source": {
+      "description": "Install provenance for `cerberus search` and `cerberus install`. Ignored by the gateway and by client adapters.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": ["npm", "pypi", "git", "binary"]
+        },
+        "package": {
+          "type": "string",
+          "description": "Package identifier (npm, pypi) or executable name (binary)."
+        },
+        "version": {
+          "type": "string",
+          "description": "Version pin or requirement, e.g. `0.6.2` or `>=1,<2`."
+        },
+        "homepage": {
+          "type": "string",
+          "description": "Repository or homepage URL."
+        },
+        "runner": {
+          "type": "string",
+          "description": "Runtime that launches the package: npx, uvx, pnpm dlx, ..."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Positional arguments given to the runner (e.g. `-y`)."
+        },
+        "url": {
+          "type": "string",
+          "description": "Source location (required for kind `git`)."
+        },
+        "ref": {
+          "type": "string",
+          "description": "Git branch, tag, or commit."
+        },
+        "env": {
+          "type": "array",
+          "description": "Environment variables the server documents; `cerberus doctor` reports missing ones.",
+          "items": { "$ref": "#/$defs/source_env" }
+        }
+      }
+    },
+    "source_env": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        },
+        "secret": {
+          "type": "boolean",
+          "default": false
+        },
+        "description": {
+          "type": "string"
+        }
       }
     }
   }

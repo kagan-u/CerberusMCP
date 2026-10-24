@@ -64,6 +64,31 @@ cerberus doctor
 
 Every machine-readable command accepts `--json`.
 
+## Find and install servers
+
+CerberusMCP queries the official MCP Registry
+(`registry.modelcontextprotocol.io`), so discovery does not depend on any
+particular client:
+
+```bash
+# Search (results are cached for offline reuse)
+cerberus search filesystem --limit 5
+cerberus search github --offline
+
+# Install: writes the entry plus its `source` provenance, nothing else
+cerberus install com.modelcontextprotocol/server-filesystem --name fs
+cerberus install com.example/server --check     # verify npx/uvx is on PATH
+cerberus install com.example/server --dry-run   # show the entry, write nothing
+
+# Installing does not touch client configs; sync is a separate, explicit step
+cerberus sync --apply
+```
+
+`install` prefers a local `stdio` package over a hosted endpoint, keeps the
+newest published version when a server appears several times, and refuses
+packaging systems it cannot run (`nuget`, `mcpb`, ...) with exit code `8`
+instead of guessing a launcher. See [`docs/registry.md`](docs/registry.md).
+
 ## Concepts
 
 ### Registry
@@ -166,6 +191,8 @@ diff                 Show drift since last sync
 backup               create | list | restore
 profile              list | show | use | create | remove
 gateway              start | status | doctor | validate | stop
+search               Search the official MCP registry (live or --offline)
+install              Add a registry server locally (write + verify)
 doctor               Diagnose configuration, clients, and servers
 health               Registry and server health
 logs                 Recent diagnostic logs
@@ -189,6 +216,7 @@ conflict, `5` not found, `6` policy denied, `7` timeout, `8` unsupported.
 | `CODEX_HOME` | Codex home (config.toml lives here) |
 | `CLINE_MCP_SETTINGS_PATH` | Exact Cline settings path |
 | `CERBERUS_OPENCODE_SCHEMA` | `1` or `2` to force OpenCode schema generation |
+| `CERBERUS_REGISTRY_URL` | Official MCP Registry base URL for `search`/`install` |
 
 ## Development
 
@@ -200,7 +228,7 @@ cargo fmt --all -- --check
 
 MSRV 1.88, edition 2024. Built on [rmcp](https://crates.io/crates/rmcp)
 (implements MCP spec 2026-07-28). See [`docs/`](docs/) for architecture,
-adapter notes, and gateway internals.
+adapter notes, registry/search internals, and gateway internals.
 
 ## License
 

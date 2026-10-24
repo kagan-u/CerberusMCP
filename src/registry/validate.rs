@@ -3,7 +3,9 @@
 use std::collections::BTreeSet;
 
 use crate::error::{CerberusError, Result};
-use crate::registry::schema::{EnvValue, HeaderValue, Registry, ServerDef, Transport};
+use crate::registry::schema::{
+    EnvValue, HeaderValue, Registry, ServerDef, SourceDef, SourceKind, Transport,
+};
 
 const MAX_NAME_LEN: usize = 64;
 
@@ -210,6 +212,186 @@ pub fn validate_server_def(name: &str, def: &ServerDef) -> Result<()> {
         validate_tool_pattern(&format!("servers.{name}.policy.deny_tools[{i}]"), pattern)?;
     }
 
+    if let Some(source) = &def.source {
+        validate_source(name, source)?;
+    }
+
+    Ok(())
+}
+
+/// Validate the install-provenance block. Requirements are per kind so a
+/// half-filled source (e.g. a git URL without `url:`) is rejected at write
+/// time rather than surfacing during a later `cerberus install --check`.
+fn validate_source(server: &str, source: &SourceDef) -> Result<()> {
+    let base = format!("servers.{server}.source");
+    let package = source.package.as_deref().unwrap_or("");
+
+    match source.kind {
+        SourceKind::Npm => {
+            require_field(&base, "package", package)?;
+            if package.contains(char::is_whitespace) || package.contains('\0') {
+                return Err(CerberusError::Validation(format!(
+                    "{base}.package: `{package}` must not contain whitespace"
+                )));
+            }
+            // npm allows scoped names of the shape `@scope/name`.
+            let bare = match package.strip_prefix('@') {
+                Some(rest) => {
+                    let valid_scope = rest.split_once('/').is_some_and(|(scope, name)| {
+                        !scope.is_empty()
+                            && !name.is_empty()
+                            && !name.contains('/')
+                            && !name.starts_with('.')
+                    });
+                    if !valid_scope {
+                        return Err(CerberusError::Validation(format!(
+                            "{base}.package: `{package}` is not a valid npm package name"
+                        )));
+                    }
+                    rest
+                }
+                None => {
+                    if package.contains('/') {
+                        return Err(CerberusError::Validation(format!(
+                            "{base}.package: `{package}` is not a valid npm package name"
+                        )));
+                    }
+                    package
+                }
+            };
+            if bare.contains("//")
+                || !bare
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "-._/".contains(c))
+            {
+                return Err(CerberusError::Validation(format!(
+                    "{base}.package: `{package}` is not a valid npm package name"
+                )));
+            }
+        }
+        SourceKind::Pypi => {
+            require_field(&base, "package", package)?;
+            let ok = !package.is_empty()
+                && package
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                && package
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+                && package
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() && c != '-');
+            if !ok {
+                return Err(CerberusError::Validation(format!(
+                    "{base}.package: `{package}` is not a valid PyPI package name"
+                )));
+            }
+        }
+        SourceKind::Git => {
+            let url = source.url.as_deref().unwrap_or("");
+            require_field(&base, "url", url)?;
+            let scp_like = url.contains(':') && !url.contains("://");
+            let parsed = url::Url::parse(url);
+            let scheme_ok = matches!(
+                parsed.as_ref().map(|u| u.scheme()),
+                Ok("http") | Ok("https") | Ok("ssh") | Ok("git") | Ok("file")
+            );
+            if !scheme_ok && !scp_like {
+                return Err(CerberusError::Validation(format!(
+                    "{base}.url: `{url}` must be an http(s)/ssh/git/file URL \
+                     or an scp-style `git@host:path`"
+                )));
+            }
+            if let Some(r) = &source.git_ref {
+                if r.trim().is_empty() {
+                    return Err(CerberusError::Validation(format!(
+                        "{base}.ref: must not be empty"
+                    )));
+                }
+            }
+        }
+        SourceKind::Binary => {
+            require_field(&base, "package", package)?;
+            if package.contains('\0') {
+                return Err(CerberusError::Validation(format!(
+                    "{base}.package: must not contain NUL"
+                )));
+            }
+        }
+    }
+
+    if let Some(version) = &source.version {
+        if version.trim().is_empty() || version.chars().any(char::is_whitespace) {
+            return Err(CerberusError::Validation(format!(
+                "{base}.version: `{version}` must be a single token without whitespace"
+            )));
+        }
+    }
+    if let Some(runner) = &source.runner {
+        if runner.trim().is_empty() {
+            return Err(CerberusError::Validation(format!(
+                "{base}.runner: must not be empty"
+            )));
+        }
+        if runner.contains('\0') {
+            return Err(CerberusError::Validation(format!(
+                "{base}.runner: must not contain NUL"
+            )));
+        }
+    }
+    for (i, arg) in source.args.iter().enumerate() {
+        if arg.contains('\0') {
+            return Err(CerberusError::Validation(format!(
+                "{base}.args[{i}]: must not contain NUL"
+            )));
+        }
+    }
+    if let Some(homepage) = &source.homepage {
+        if url::Url::parse(homepage).is_err() {
+            return Err(CerberusError::Validation(format!(
+                "{base}.homepage: `{homepage}` is not a valid URL"
+            )));
+        }
+    }
+
+    let mut seen = BTreeSet::new();
+    for (i, env) in source.env.iter().enumerate() {
+        let loc = format!("{base}.env[{i}]");
+        let valid = !env.name.is_empty()
+            && env
+                .name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && env
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            return Err(CerberusError::Validation(format!(
+                "{loc}.name: `{}` is not a valid environment variable name",
+                env.name
+            )));
+        }
+        if !seen.insert(env.name.as_str()) {
+            return Err(CerberusError::Validation(format!(
+                "{base}.env: duplicate variable `{}`",
+                env.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn require_field(base: &str, field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(CerberusError::Validation(format!(
+            "{base}.{field}: required for this source kind"
+        )));
+    }
     Ok(())
 }
 
@@ -267,6 +449,7 @@ mod tests {
             startup_timeout_ms: None,
             policy: ServerPolicy::default(),
             description: None,
+            source: None,
         }
     }
 
@@ -315,6 +498,7 @@ mod tests {
                 startup_timeout_ms: None,
                 policy: ServerPolicy::default(),
                 description: None,
+                source: None,
             },
         );
         let err = validate(&reg).unwrap_err().to_string();
@@ -374,8 +558,163 @@ mod tests {
                 startup_timeout_ms: None,
                 policy: ServerPolicy::default(),
                 description: None,
+                source: None,
             },
         );
         assert!(validate(&reg).is_err());
+    }
+
+    fn server_with_source(source: SourceDef) -> ServerDef {
+        let mut def = stdio_server("npx");
+        def.source = Some(source);
+        def
+    }
+
+    fn source(kind: SourceKind) -> SourceDef {
+        SourceDef {
+            kind,
+            package: None,
+            version: None,
+            homepage: None,
+            runner: None,
+            args: vec![],
+            url: None,
+            git_ref: None,
+            env: vec![],
+        }
+    }
+
+    fn validate_source_of(source: SourceDef) -> Result<()> {
+        validate_server_def("svc", &server_with_source(source))
+    }
+
+    #[test]
+    fn accepts_well_formed_sources() {
+        let mut npm = source(SourceKind::Npm);
+        npm.package = Some("@modelcontextprotocol/server-filesystem".into());
+        npm.version = Some("0.6.2".into());
+        npm.runner = Some("npx".into());
+        npm.args = vec!["-y".into()];
+        npm.homepage = Some("https://github.com/modelcontextprotocol/servers".into());
+        npm.env = vec![
+            SourceEnv {
+                name: "API_KEY".into(),
+                required: true,
+                secret: true,
+                description: Some("key".into()),
+            },
+            SourceEnv {
+                name: "OPTIONAL".into(),
+                required: false,
+                secret: false,
+                description: None,
+            },
+        ];
+        validate_source_of(npm).unwrap();
+
+        let mut pypi = source(SourceKind::Pypi);
+        pypi.package = Some("my_package-2".into());
+        validate_source_of(pypi).unwrap();
+
+        let mut git = source(SourceKind::Git);
+        git.url = Some("git@github.com:org/repo.git".into());
+        git.git_ref = Some("v1.2.3".into());
+        validate_source_of(git).unwrap();
+
+        let mut bin = source(SourceKind::Binary);
+        bin.package = Some("/usr/local/bin/mcp-server".into());
+        validate_source_of(bin).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_package_for_npm() {
+        let err = validate_source_of(source(SourceKind::Npm))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("package"), "{err}");
+        assert!(err.contains("required"), "{err}");
+    }
+
+    #[test]
+    fn rejects_malformed_package_names() {
+        for bad in ["Has Space", "a//b", "@scope", "UPPER"] {
+            let mut s = source(SourceKind::Npm);
+            s.package = Some(bad.into());
+            let err = validate_source_of(s).unwrap_err().to_string();
+            // Whitespace and charset are rejected by different checks; both
+            // must name the offending field.
+            assert!(err.contains("source.package"), "{bad}: {err}");
+        }
+
+        for bad in ["my pkg", "trailing-", "-leading", ""] {
+            let mut s = source(SourceKind::Pypi);
+            s.package = Some(bad.into());
+            assert!(validate_source_of(s).is_err(), "pypi should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_bad_or_missing_git_url() {
+        let err = validate_source_of(source(SourceKind::Git))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("url"), "{err}");
+
+        let mut s = source(SourceKind::Git);
+        s.url = Some("ftp://example.com/repo".into());
+        let err = validate_source_of(s).unwrap_err().to_string();
+        assert!(err.contains("http(s)/ssh/git/file"), "{err}");
+
+        let mut ok = source(SourceKind::Git);
+        ok.url = Some("https://github.com/org/repo".into());
+        validate_source_of(ok).unwrap();
+    }
+
+    #[test]
+    fn rejects_ambiguous_version_and_bad_env_names() {
+        let mut s = source(SourceKind::Npm);
+        s.package = Some("pkg".into());
+        s.version = Some(">= 1, < 2".into());
+        let err = validate_source_of(s).unwrap_err().to_string();
+        assert!(err.contains("version"), "{err}");
+
+        let mut s = source(SourceKind::Npm);
+        s.package = Some("pkg".into());
+        s.env = vec![SourceEnv {
+            name: "1BAD-NAME".into(),
+            required: true,
+            secret: false,
+            description: None,
+        }];
+        let err = validate_source_of(s).unwrap_err().to_string();
+        assert!(err.contains("environment variable name"), "{err}");
+
+        let mut s = source(SourceKind::Npm);
+        s.package = Some("pkg".into());
+        s.env = vec![
+            SourceEnv {
+                name: "SAME".into(),
+                required: true,
+                secret: false,
+                description: None,
+            },
+            SourceEnv {
+                name: "SAME".into(),
+                required: false,
+                secret: false,
+                description: None,
+            },
+        ];
+        let err = validate_source_of(s).unwrap_err().to_string();
+        assert!(err.contains("duplicate variable"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_homepage() {
+        let mut s = source(SourceKind::Npm);
+        s.package = Some("pkg".into());
+        s.homepage = Some("not a url".into());
+        let err = validate_source_of(s).unwrap_err().to_string();
+        assert!(err.contains("homepage"), "{err}");
     }
 }
