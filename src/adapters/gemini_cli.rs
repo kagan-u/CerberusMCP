@@ -465,6 +465,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("HOME", dir.path());
+            // Windows BaseDirs resolves USERPROFILE, not HOME.
+            std::env::set_var("USERPROFILE", dir.path());
         };
         let gem = dir.path().join(".gemini");
         std::fs::create_dir_all(&gem).unwrap();

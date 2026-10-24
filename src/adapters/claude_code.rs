@@ -464,6 +464,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("HOME", dir.path());
+            // Windows BaseDirs resolves USERPROFILE, not HOME.
+            std::env::set_var("USERPROFILE", dir.path());
         };
         // Force a clean path: point HOME so ~/.claude.json lands in tempdir.
         // home_path uses BaseDirs which caches? directories crate reads env each call.
@@ -501,6 +503,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("HOME", dir.path());
+            // Windows BaseDirs resolves USERPROFILE, not HOME.
+            std::env::set_var("USERPROFILE", dir.path());
         };
         let paths = CerberusPaths::with_roots(dir.path().join("cfg"), dir.path().join("data"));
         paths.ensure_dirs().unwrap();

@@ -29,7 +29,9 @@ impl Sandbox {
         cmd.env("CERBERUS_CONFIG_DIR", self.path("config"))
             .env("CERBERUS_DATA_DIR", self.path("data"))
             // Fully sandbox HOME so client adapters cannot see real configs.
+            // Windows BaseDirs resolves USERPROFILE, not HOME.
             .env("HOME", self.path("home"))
+            .env("USERPROFILE", self.path("home"))
             .env("OPENCODE_CONFIG", self.path("home/opencode.json"))
             .env("CODEX_HOME", self.path("home/.codex"))
             .env("CLINE_MCP_SETTINGS_PATH", self.path("home/cline.json"))

@@ -110,7 +110,7 @@ pub fn list(paths: &CerberusPaths) -> Result<Vec<BackupMeta>> {
             }
         }
     }
-    out.sort_by(|a, b| b.created_unix.cmp(&a.created_unix));
+    out.sort_by_key(|m| std::cmp::Reverse(m.created_unix));
     Ok(out)
 }
 
@@ -167,7 +167,7 @@ fn prune_old(paths: &CerberusPaths) -> Result<()> {
     if metas.len() <= MAX_BACKUPS {
         return Ok(());
     }
-    metas.sort_by(|a, b| a.created_unix.cmp(&b.created_unix));
+    metas.sort_by_key(|m| m.created_unix);
     let excess = metas.len() - MAX_BACKUPS;
     for meta in metas.into_iter().take(excess) {
         let _ = std::fs::remove_file(&meta.stored);
