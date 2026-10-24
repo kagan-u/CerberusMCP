@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: cerberus
+            archive: tar.gz
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: cerberus.exe
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package (linux)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          stage="cerberus-${{ matrix.name }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/cerberus" "$stage/"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          tar -czf "$stage.tar.gz" "$stage"
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          stage="cerberus-${{ matrix.name }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/cerberus.exe" "$stage/"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          7z a "$stage.zip" "$stage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerberus-${{ matrix.name }}
+          path: cerberus-${{ matrix.name }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            cerberus-linux-x86_64.tar.gz
+            cerberus-windows-x86_64.zip

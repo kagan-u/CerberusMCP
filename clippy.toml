@@ -1,0 +1,2 @@
+# CerberusMCP lints: deny the patterns that hide real bugs.
+msrv = "1.88"

@@ -1,0 +1,63 @@
+# Example CerberusMCP registry (schema v1).
+#
+# Copy to your config dir (`cerberus init` creates the default) or point at
+# it with `cerberus --config ./examples/registry.yaml ...`.
+
+schema_version: 1
+
+settings:
+  default_mode: direct
+
+servers:
+  filesystem:
+    description: Read-only local filesystem access
+    tags: [local, files]
+    transport:
+      type: stdio
+      command: npx
+      args:
+        - "-y"
+        - "@modelcontextprotocol/server-filesystem"
+        - "/tmp"
+    timeout_ms: 30000
+    policy:
+      deny_tools: []
+
+  github:
+    description: GitHub MCP remote server
+    tags: [remote, vcs]
+    transport:
+      type: http
+      url: https://api.githubcopilot.com/mcp/
+      headers:
+        Authorization:
+          source: env
+          name: GITHUB_AUTHORIZATION
+    mode: gateway
+
+  memory:
+    description: Local knowledge-graph memory server (secrets via secret_ref)
+    tags: [local, memory]
+    transport:
+      type: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-memory"]
+      env:
+        MEMORY_FILE_PATH:
+          source: literal
+          value: "/tmp/cerberus-memory.json"
+        API_TOKEN:
+          source: secret_ref
+          name: memory-api-token
+    policy:
+      allow_tools: []
+      deny_tools: ["memory_admin_*"]
+      require_confirmation: false
+
+profiles:
+  minimal:
+    servers: [filesystem]
+  dev:
+    servers: [filesystem, memory]
+
+active_profile: dev
