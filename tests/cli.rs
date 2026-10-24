@@ -35,8 +35,11 @@ impl Sandbox {
             .env("OPENCODE_CONFIG", self.path("home/opencode.json"))
             .env("CODEX_HOME", self.path("home/.codex"))
             .env("CLINE_MCP_SETTINGS_PATH", self.path("home/cline.json"))
-            .env_remove("XDG_CONFIG_HOME")
-            .env_remove("APPDATA");
+            // Redirect (not remove) the Windows well-known folders: removing
+            // them makes `BaseDirs`/`ProjectDirs` resolution fail outright.
+            .env("APPDATA", self.path("home/AppData/Roaming"))
+            .env("LOCALAPPDATA", self.path("home/AppData/Local"))
+            .env_remove("XDG_CONFIG_HOME");
         fs::create_dir_all(self.path("home")).ok();
         fs::create_dir_all(self.path("home/.codex")).ok();
         cmd

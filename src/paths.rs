@@ -25,22 +25,40 @@ pub struct CerberusPaths {
 
 impl CerberusPaths {
     pub fn resolve() -> Result<Self> {
-        let project = ProjectDirs::from(PROJECT_QUALIFIER, PROJECT_ORGANIZATION, PROJECT_NAME)
-            .ok_or_else(|| {
-                CerberusError::Other(
-                "could not determine home directory; set CERBERUS_CONFIG_DIR and CERBERUS_DATA_DIR"
-                    .into(),
-            )
-            })?;
+        let config_env = std::env::var_os("CERBERUS_CONFIG_DIR").map(PathBuf::from);
+        let data_env = std::env::var_os("CERBERUS_DATA_DIR").map(PathBuf::from);
 
-        let config_dir = match std::env::var_os("CERBERUS_CONFIG_DIR") {
-            Some(dir) => PathBuf::from(dir),
-            None => project.config_local_dir().to_path_buf(),
+        // Both overrides set: never touch the OS home directory. This keeps
+        // sandboxed runs (tests, CI containers without a user profile) working
+        // even when `ProjectDirs` cannot resolve one.
+        let project = if config_env.is_some() && data_env.is_some() {
+            None
+        } else {
+            Some(
+                ProjectDirs::from(PROJECT_QUALIFIER, PROJECT_ORGANIZATION, PROJECT_NAME)
+                    .ok_or_else(|| {
+                        CerberusError::Other(
+                            "could not determine home directory; set CERBERUS_CONFIG_DIR and CERBERUS_DATA_DIR"
+                                .into(),
+                        )
+                    })?,
+            )
         };
-        let data_dir = match std::env::var_os("CERBERUS_DATA_DIR") {
-            Some(dir) => PathBuf::from(dir),
-            None => project.data_local_dir().to_path_buf(),
-        };
+
+        let config_dir = config_env.unwrap_or_else(|| {
+            project
+                .as_ref()
+                .expect("project dirs resolved when no config override")
+                .config_local_dir()
+                .to_path_buf()
+        });
+        let data_dir = data_env.unwrap_or_else(|| {
+            project
+                .as_ref()
+                .expect("project dirs resolved when no data override")
+                .data_local_dir()
+                .to_path_buf()
+        });
         let registry_file = match std::env::var_os("CERBERUS_CONFIG_FILE") {
             Some(file) => PathBuf::from(file),
             None => config_dir.join("cerberus.yaml"),
@@ -120,14 +138,21 @@ impl CerberusPaths {
 }
 
 /// Resolve the user's home directory without assuming it exists.
+///
+/// Explicit environment variables win over the OS lookup: `BaseDirs` on
+/// Windows resolves the profile folder through `SHGetKnownFolderPath`, which
+/// ignores `HOME`/`USERPROFILE` entirely. Honouring the variables first is
+/// what makes sandboxed runs (tests, containers) actually take effect, and
+/// matches the documented `HOME` override.
 pub fn home_dir() -> Option<PathBuf> {
-    BaseDirs::new()
-        .map(|d| d.home_dir().to_path_buf())
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
-        })
+    #[cfg(windows)]
+    let from_env = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    #[cfg(not(windows))]
+    let from_env = std::env::var_os("HOME");
+
+    from_env
+        .map(PathBuf::from)
+        .or_else(|| BaseDirs::new().map(|d| d.home_dir().to_path_buf()))
 }
 
 /// Join `segments` onto the home directory, failing loudly if home is unset.
