@@ -197,10 +197,10 @@ fn short_id() -> String {
 }
 
 fn getrandom_fill(buf: &mut [u8]) {
-    use std::io::Read;
     // Best-effort randomness from the OS; falls back to time+pid mix.
     #[cfg(unix)]
     {
+        use std::io::Read;
         if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
             if f.read_exact(buf).is_ok() {
                 return;

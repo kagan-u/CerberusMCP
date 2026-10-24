@@ -60,7 +60,6 @@ impl ClineAdapter {
         }
 
         // VSCode-family editors.
-        #[cfg(target_os = "macos")]
         let bases = ["Code", "Cursor", "Windsurf", "Code - Insiders"];
         #[cfg(target_os = "macos")]
         let app_support = home_path(&["Library", "Application Support"]).ok();
