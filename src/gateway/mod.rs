@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ContentBlock, ErrorData as McpError, ListToolsResult,
-    ServerCapabilities, ServerConfig, Tool,
+    MetaObject, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{
@@ -44,6 +44,25 @@ const DEFAULT_CALL_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_MAX_CONCURRENCY: usize = 32;
 const SEPARATOR_NOTE: &str = "tools are named {server}__{tool}";
+
+/// Reverse-DNS `_meta` key under which the gateway publishes tool routing.
+///
+/// This is a wire contract with the Cerberus SDKs: they read `server` and
+/// `tool` from here instead of splitting the public name themselves.
+const ROUTE_META_KEY: &str = "cerberus.dev/route";
+
+/// Routing metadata attached to every entry in `tools/list`.
+///
+/// A tool's own name may contain the `__` separator, so parsing the public
+/// name is only ever a fallback; this structure is authoritative.
+fn route_meta(server: &str, tool: &str) -> MetaObject {
+    let mut route = rmcp::model::JsonObject::new();
+    route.insert("server".into(), server.into());
+    route.insert("tool".into(), tool.into());
+    let mut meta = rmcp::model::JsonObject::new();
+    meta.insert(ROUTE_META_KEY.into(), serde_json::Value::Object(route));
+    MetaObject(meta)
+}
 
 // ---------------------------------------------------------------------------
 // Structured error contract
@@ -404,8 +423,10 @@ impl ServerHandler for GatewayHandler {
                 .build(),
         )
         .with_instructions(format!(
-            "CerberusMCP gateway. {SEPARATOR_NOTE}. Policies are enforced before any \
-             request reaches an upstream server."
+            "CerberusMCP gateway. {SEPARATOR_NOTE}. Each tool also carries \
+             `_meta.{ROUTE_META_KEY}` with {{server, tool}} for clients that prefer \
+             structured routing. Policies are enforced before any request reaches an \
+             upstream server."
         ))
     }
 
@@ -435,11 +456,13 @@ impl ServerHandler for GatewayHandler {
                 .clone()
                 .unwrap_or_else(|| format!("Tool `{}` from server `{}`", route.tool, route.server));
             description = format!("[{}] {}", route.server, description);
-            tools.push(Tool::new(
+            let mut tool = Tool::new(
                 route.public_name.clone(),
                 description,
                 upstream_input_schema(upstream, &route.tool),
-            ));
+            );
+            tool.meta = Some(route_meta(&route.server, &route.tool));
+            tools.push(tool);
         }
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -1231,5 +1254,53 @@ mod tests {
         let code: GatewayErrorCode =
             serde_json::from_value(wire["structuredContent"]["code"].clone()).unwrap();
         assert_eq!(code, GatewayErrorCode::PolicyDenied);
+    }
+
+    /// The exact `_meta` object an SDK reads off `tools/list`.
+    #[test]
+    fn route_meta_serializes_under_stable_reverse_dns_key() {
+        let meta = route_meta("remote-filesystem", "read_file");
+        let wire = serde_json::to_value(&meta).unwrap();
+
+        let route = wire.get(ROUTE_META_KEY).expect("route key must be present");
+        assert_eq!(route["server"], "remote-filesystem");
+        assert_eq!(route["tool"], "read_file");
+        // No stray sibling keys.
+        assert_eq!(wire.as_object().unwrap().len(), 1);
+    }
+
+    /// `Tool` must emit the metadata as `_meta` on the wire, with no
+    /// serde renaming of the key itself.
+    #[test]
+    fn tool_listing_carries_route_meta_on_the_wire() {
+        let schema = serde_json::json!({"type": "object", "properties": {}});
+        let mut tool = Tool::new(
+            "remote-filesystem__read_file".to_string(),
+            "[remote-filesystem] Read a file".to_string(),
+            std::sync::Arc::new(schema.as_object().unwrap().clone()),
+        );
+        tool.meta = Some(route_meta("remote-filesystem", "read_file"));
+
+        let wire = serde_json::to_value(&tool).unwrap();
+        assert_eq!(wire["name"], "remote-filesystem__read_file");
+        assert_eq!(wire["_meta"][ROUTE_META_KEY]["server"], "remote-filesystem");
+        assert_eq!(wire["_meta"][ROUTE_META_KEY]["tool"], "read_file");
+        // Snake_case spellings must not appear.
+        assert!(wire.get("route_meta").is_none());
+        assert!(wire.get("routeMeta").is_none());
+    }
+
+    /// A tool whose own name contains the separator resolves back through the
+    /// public name only via first-split, and the metadata keeps them apart.
+    #[test]
+    fn route_meta_is_authoritative_for_separator_bearing_tool_names() {
+        let public = crate::routing::public_tool_name("srv", "do__it");
+        assert_eq!(public, "srv__do__it");
+        assert_eq!(
+            crate::routing::split_public_name(&public),
+            Some(("srv", "do__it"))
+        );
+        let wire = serde_json::to_value(route_meta("srv", "do__it")).unwrap();
+        assert_eq!(wire[ROUTE_META_KEY]["tool"], "do__it");
     }
 }

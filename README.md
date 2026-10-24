@@ -142,6 +142,8 @@ and `--debug` output.
 Public tool names are `{server}__{tool}` (server names cannot contain `__`).
 Client adapters write each server as its own entry, so clients that don't
 flatten tools see natural per-server names; the gateway flattens and routes.
+Every `tools/list` entry also carries `_meta["cerberus.dev/route"]` with
+`{server, tool}`, so SDKs route structurally instead of parsing names.
 
 ## Client support
 

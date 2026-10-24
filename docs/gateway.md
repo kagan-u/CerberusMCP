@@ -28,6 +28,29 @@ contains the separator, which registration forbids) and refuses to register
 colliding routes. `split_public_name` splits on the first `__` only, so
 upstream tools containing `__` keep working.
 
+### Structured routing metadata
+
+Every entry in `tools/list` also carries the mapping under `_meta`, so
+clients never have to parse the public name:
+
+```json
+{
+  "name": "remote-filesystem__read_file",
+  "description": "[remote-filesystem] Read a file...",
+  "_meta": {
+    "cerberus.dev/route": {
+      "server": "remote-filesystem",
+      "tool": "read_file"
+    }
+  }
+}
+```
+
+`_meta["cerberus.dev/route"]` is a wire contract with the Cerberus SDKs
+(`cerberus-sdk`): `server` and `tool` are authoritative, and the name is only
+ever a fallback. The nested reverse-DNS key keeps gateway metadata from
+colliding with other `_meta` producers (trace context, host tooling).
+
 ## Lifecycle
 
 Upstreams connect lazily on first use and reconnect on failure. Each

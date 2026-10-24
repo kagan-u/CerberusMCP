@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CERBERUS_REGISTRY_URL` overrides the registry endpoint.
 - `server inspect` now includes the `source` block in `--json` and in its
   text output.
+- Gateway `tools/list` carries structured routing metadata: every tool
+  entry has `_meta["cerberus.dev/route"]` = `{server, tool}`, so client
+  SDKs never split the `{server}__{tool}` public name (contract documented
+  in `docs/gateway.md`).
 
 ### Fixed
 
