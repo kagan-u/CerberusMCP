@@ -3,6 +3,7 @@
 pub mod catalog;
 pub mod migrate;
 pub mod schema;
+pub mod toml_io;
 pub mod validate;
 
 use std::collections::BTreeMap;
@@ -14,9 +15,10 @@ use crate::paths::CerberusPaths;
 use schema::{Profile, Registry, ServerDef, Transport};
 
 pub use schema::{
-    EnvValue, ExecutionMode, HeaderValue, SCHEMA_VERSION, ServerPolicy, Settings,
-    Transport as ServerTransport,
+    CommandDef, EnvValue, ExecutionMode, HeaderValue, HookStep, SCHEMA_VERSION, ServerPolicy,
+    Settings, Transport as ServerTransport,
 };
+pub use toml_io::RegistryFormat;
 
 /// Handle to a loaded registry bound to its on-disk location.
 #[derive(Debug)]
@@ -60,6 +62,69 @@ impl RegistryStore {
         }
     }
 
+    /// Load the registry for resolved paths, converting a legacy
+    /// `cerberus.yaml` to `conf.cerberus` on first access.
+    ///
+    /// The fallback only applies when the configured file is the default
+    /// name and is missing: an explicit `--config`/`CERBERUS_CONFIG_FILE`
+    /// path never pulls in a sibling file. Conversion parses (and, where
+    /// versions differ, migrates with a pre-migration backup) the legacy
+    /// document, validates it, writes `conf.cerberus`, then moves the legacy
+    /// file into the backups directory so later runs cannot pick it up again.
+    pub fn load_with_migration(paths: &CerberusPaths) -> Result<Self> {
+        let primary = &paths.registry_file;
+        if primary.exists() {
+            return Self::load(primary);
+        }
+        let is_default_name =
+            primary.file_name().and_then(|n| n.to_str()) == Some(crate::paths::REGISTRY_FILE_NAME);
+        let legacy = paths
+            .config_dir
+            .join(crate::paths::LEGACY_REGISTRY_FILE_NAME);
+        if is_default_name && legacy.is_file() && legacy != *primary {
+            return Self::migrate_legacy_file(paths, &legacy, primary);
+        }
+        Self::load(primary)
+    }
+
+    fn migrate_legacy_file(paths: &CerberusPaths, legacy: &Path, primary: &Path) -> Result<Self> {
+        let text = std::fs::read_to_string(legacy).map_err(|source| CerberusError::Io {
+            path: legacy.to_path_buf(),
+            source,
+        })?;
+        let registry = parse_registry(&text, legacy)?;
+        tracing::info!(
+            legacy = %legacy.display(),
+            migrated_to = %primary.display(),
+            "migrating legacy YAML registry to conf.cerberus"
+        );
+        let mut store = Self {
+            path: primary.to_path_buf(),
+            registry,
+            content_hash: 0,
+        };
+        store.save()?;
+
+        // Move the legacy file aside (the parse above already left a copy in
+        // backups/migrations when versions differed; the rename itself keeps
+        // a copy too). Failure is non-fatal: `conf.cerberus` now exists, so
+        // the fallback can never trigger again.
+        let stamp = crate::backup::timestamp_slug();
+        let dir = paths.backups_dir().join("migrations");
+        let dest = dir.join(format!(
+            "{}-{stamp}.yaml.bak",
+            crate::paths::LEGACY_REGISTRY_FILE_NAME
+        ));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(error = %e, "could not create migrations backup dir");
+        } else if let Err(e) = std::fs::rename(legacy, &dest) {
+            tracing::warn!(error = %e, path = %legacy.display(), "could not move legacy registry aside");
+        } else {
+            tracing::info!(moved_to = %dest.display(), "legacy registry moved to backups");
+        }
+        Ok(store)
+    }
+
     /// Persist to disk atomically: write a sibling temp file, fsync, rename.
     pub fn save(&mut self) -> Result<()> {
         self.save_to(&self.path.clone())
@@ -67,8 +132,12 @@ impl RegistryStore {
 
     pub fn save_to(&mut self, path: &Path) -> Result<()> {
         validate::validate(&self.registry)?;
-        let text = serde_yaml::to_string(&self.registry)
-            .map_err(|e| CerberusError::Validation(format!("failed to serialize registry: {e}")))?;
+        let text = match toml_io::format_for_path(path) {
+            RegistryFormat::Toml => toml_io::registry_to_toml(&self.registry)?,
+            RegistryFormat::Yaml => serde_yaml::to_string(&self.registry).map_err(|e| {
+                CerberusError::Validation(format!("failed to serialize registry: {e}"))
+            })?,
+        };
         atomic_write(path, text.as_bytes())?;
         self.path = path.to_path_buf();
         self.content_hash = hash_text(&text);
@@ -187,8 +256,14 @@ impl RegistryStore {
     }
 }
 
-/// Parse registry text, routing through migrations when schema versions differ.
+/// Parse registry text, routing through migrations when schema versions
+/// differ. The document format (TOML vs YAML) is detected from content,
+/// falling back to the file extension.
 pub fn parse_registry(text: &str, path: &Path) -> Result<Registry> {
+    if toml_io::sniff_format(text, path) == RegistryFormat::Toml {
+        return toml_io::parse_toml_registry(text, path);
+    }
+
     let doc: serde_yaml::Value =
         serde_yaml::from_str(text).map_err(|e| CerberusError::ConfigParse {
             path: path.to_path_buf(),
@@ -334,6 +409,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         };
         store.add_server("test", def.clone()).unwrap();
         store.save().unwrap();

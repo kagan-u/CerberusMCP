@@ -123,16 +123,21 @@ pub fn restore(paths: &CerberusPaths, id: &str) -> Result<BackupMeta> {
         source,
     })?;
 
-    // Verify the stored copy parses as JSON or YAML before overwriting.
+    // Verify the stored copy parses before overwriting.
     let looks_json = text.trim_start().starts_with('{');
     let parse_ok = if looks_json {
         serde_json::from_str::<serde_json::Value>(&text).is_ok()
     } else {
-        serde_yaml::from_str::<serde_yaml::Value>(&text).is_ok()
+        match crate::registry::toml_io::sniff_format(&text, &meta.original) {
+            crate::registry::RegistryFormat::Toml => toml::from_str::<toml::Table>(&text).is_ok(),
+            crate::registry::RegistryFormat::Yaml => {
+                serde_yaml::from_str::<serde_yaml::Value>(&text).is_ok()
+            }
+        }
     };
     if !parse_ok {
         return Err(CerberusError::Other(format!(
-            "backup {id} does not parse as JSON or YAML; refusing to restore"
+            "backup {id} does not parse as JSON, TOML, or YAML; refusing to restore"
         )));
     }
 

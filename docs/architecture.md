@@ -4,7 +4,7 @@
 src/
 ├── cli/          clap definitions, output helpers (JSON vs human)
 ├── commands.rs   command implementations (the only layer that talks to Ctx)
-├── registry/     schema v1 types, validation, migrations, atomic store
+├── registry/     schema v2 types (conf.cerberus TOML), validation, migrations, atomic store
 ├── adapters/     per-client translation: plan → classify → apply
 ├── sync/         orchestrates adapters across clients + profiles
 ├── policy/       tool allow/deny evaluation (wildcard matching)

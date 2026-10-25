@@ -457,6 +457,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         }
     }
 
@@ -491,6 +492,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         };
         let servers = BTreeMap::from([("remote".to_string(), remote)]);
         let managed = ClientManagedState::default();

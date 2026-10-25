@@ -1,0 +1,89 @@
+# Example CerberusMCP registry (schema v2, TOML).
+#
+# Copy to your config dir as `conf.cerberus` (`cerberus init` creates the
+# default) or point at it with `cerberus --config ./examples/conf.cerberus ...`.
+
+schema_version = 2
+active_profile = "dev"
+
+[settings]
+default_mode = "direct"
+
+# Reusable commands: `cerberus run bootstrap`, or referenced from a
+# server's pre_launch hooks. Exec vectors only — no implicit shell.
+[commands.bootstrap]
+run = ["sh", "-c", "echo 'environment ready'"]
+description = "Warm up the local environment before starting servers"
+timeout_ms = 10000
+
+# --- servers -----------------------------------------------------------------
+
+[servers.filesystem]
+description = "Read-only local filesystem access"
+tags = ["local", "files"]
+timeout_ms = 30000
+# Steps that run before the process is spawned (stdio only, gateway mode).
+pre_launch = [{ use = "bootstrap" }]
+
+[servers.filesystem.transport]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+[servers.filesystem.policy]
+deny_tools = []
+
+# Install provenance: written by `cerberus install`, read by
+# `cerberus doctor`. Never used by the gateway or by client adapters.
+[servers.filesystem.source]
+kind = "npm"
+package = "@modelcontextprotocol/server-filesystem"
+version = "0.6.2"
+runner = "npx"
+args = ["-y"]
+homepage = "https://github.com/modelcontextprotocol/servers"
+
+[[servers.filesystem.source.env]]
+name = "SOME_API_KEY"
+required = false
+secret = true
+description = "Optional credential the server accepts"
+
+[servers.github]
+description = "GitHub MCP remote server"
+tags = ["remote", "vcs"]
+mode = "gateway"
+
+[servers.github.transport]
+type = "http"
+url = "https://api.githubcopilot.com/mcp/"
+headers = { Authorization = { source = "env", name = "GITHUB_AUTHORIZATION" } }
+
+[servers.memory]
+description = "Local knowledge-graph memory server (secrets via secret_ref)"
+tags = ["local", "memory"]
+
+[servers.memory.transport]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-memory"]
+env = { MEMORY_FILE_PATH = { source = "literal", value = "/tmp/cerberus-memory.json" }, API_TOKEN = { source = "secret_ref", name = "memory-api-token" } }
+
+[servers.memory.policy]
+allow_tools = []
+deny_tools = ["memory_admin_*"]
+require_confirmation = false
+
+[servers.memory.source]
+kind = "npm"
+package = "@modelcontextprotocol/server-memory"
+runner = "npx"
+args = ["-y"]
+
+# --- profiles ----------------------------------------------------------------
+
+[profiles.minimal]
+servers = ["filesystem"]
+
+[profiles.dev]
+servers = ["filesystem", "memory"]

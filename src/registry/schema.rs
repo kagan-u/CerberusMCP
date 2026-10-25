@@ -1,7 +1,9 @@
 //! Canonical registry schema.
 //!
-//! The registry is a versioned, human-readable YAML document that describes
-//! MCP servers, profiles, policies, and defaults. It is deliberately
+//! The registry is a versioned, human-readable document that describes MCP
+//! servers, profiles, policies, reusable commands, and defaults. The default
+//! format is TOML (`conf.cerberus`); legacy YAML documents (`cerberus.yaml`)
+//! are still read through the migration chain. It is deliberately
 //! independent of any particular AI client.
 
 use std::collections::BTreeMap;
@@ -11,7 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Current schema version understood by this build.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Top-level registry document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +22,10 @@ pub struct Registry {
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Settings::is_default")]
     pub settings: Settings,
+    /// Named reusable commands, runnable with `cerberus run <name>` and
+    /// referenceable from server `pre_launch` hooks.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub commands: BTreeMap<String, CommandDef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub servers: BTreeMap<String, ServerDef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -34,11 +40,66 @@ impl Default for Registry {
         Self {
             schema_version: SCHEMA_VERSION,
             settings: Settings::default(),
+            commands: BTreeMap::new(),
             servers: BTreeMap::new(),
             profiles: BTreeMap::new(),
             active_profile: None,
         }
     }
+}
+
+/// A named reusable command (`cerberus run <name>`).
+///
+/// Commands are plain exec vectors — never an implicit shell. Runners that
+/// need shell semantics spell them out (`["sh", "-c", "..."]`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandDef {
+    /// Executable + arguments, executed directly (no shell).
+    pub run: Vec<String>,
+    /// Working directory; `~` is expanded to the user's home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// Extra environment entries, resolved like transport env values.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, EnvValue>,
+    /// Wall-clock timeout in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Human-readable description shown by `cerberus run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// One step executed before a stdio upstream is spawned.
+///
+/// Either references a top-level command (`use`) or carries an inline argv
+/// (`run`) — exactly one of the two must be set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookStep {
+    /// Name of a `[commands.<name>]` entry to run.
+    #[serde(rename = "use", default, skip_serializing_if = "Option::is_none")]
+    pub use_command: Option<String>,
+    /// Inline executable + arguments (alternative to `use`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<Vec<String>>,
+    /// Working directory; falls back to the server transport's cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
+    /// Extra environment entries, merged over the server launch env.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, EnvValue>,
+    /// Per-step timeout in milliseconds (default: 30_000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Log-and-continue instead of aborting the upstream connect.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub continue_on_error: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,6 +234,11 @@ pub struct ServerDef {
     /// Optional human-readable description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Steps executed before this server's process is spawned (stdio only).
+    /// The gateway runs them on every connect attempt; direct-mode client
+    /// adapters cannot express them and ignore this block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_launch: Vec<HookStep>,
     /// Install provenance. Ignored by the gateway and by client adapters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceDef>,
@@ -379,59 +445,57 @@ mod tests {
 
     #[test]
     fn round_trips_full_document() {
-        let yaml = r#"
-schema_version: 1
-settings:
-  default_mode: direct
-  log_level: info
-servers:
-  github:
-    enabled: true
-    transport:
-      type: stdio
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-github"]
-      env:
-        GITHUB_PERSONAL_ACCESS_TOKEN:
-          source: secret_ref
-          name: github_token
-    tags: [development]
-    policy:
-      allow_tools: []
-      deny_tools: []
-profiles:
-  development:
-    servers: [github]
-active_profile: development
+        let toml = r#"
+schema_version = 2
+active_profile = "development"
+
+[settings]
+default_mode = "direct"
+log_level = "info"
+
+[servers.github]
+tags = ["development"]
+
+[servers.github.transport]
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+
+[servers.github.transport.env.GITHUB_PERSONAL_ACCESS_TOKEN]
+source = "secret_ref"
+name = "github_token"
+
+[profiles.development]
+servers = ["github"]
 "#;
-        let reg: Registry = serde_yaml::from_str(yaml).unwrap();
+        let reg: Registry = toml::from_str(toml).unwrap();
         assert_eq!(reg.schema_version, SCHEMA_VERSION);
         assert!(reg.servers.contains_key("github"));
         assert_eq!(reg.active_profile.as_deref(), Some("development"));
-        let rendered = serde_yaml::to_string(&reg).unwrap();
-        let back: Registry = serde_yaml::from_str(&rendered).unwrap();
+        let rendered = toml::to_string(&reg).unwrap();
+        let back: Registry = toml::from_str(&rendered).unwrap();
         assert_eq!(reg, back);
     }
 
     #[test]
     fn rejects_unknown_fields() {
-        let yaml = "schema_version: 1\nunknown_top: true\n";
-        assert!(serde_yaml::from_str::<Registry>(yaml).is_err());
+        let toml = "schema_version = 2\nunknown_top = true\n";
+        assert!(toml::from_str::<Registry>(toml).is_err());
     }
 
     #[test]
     fn http_transport_parses() {
-        let yaml = r#"
-schema_version: 1
-servers:
-  remote:
-    transport:
-      type: http
-      url: https://example.com/mcp
-      headers:
-        Authorization: Bearer xyz
+        let toml = r#"
+schema_version = 2
+
+[servers.remote.transport]
+type = "http"
+url = "https://example.com/mcp"
+
+[servers.remote.transport.headers]
+Authorization = "Bearer xyz"
 "#;
-        let reg: Registry = serde_yaml::from_str(yaml).unwrap();
+        let reg: Registry = toml::from_str(toml).unwrap();
         match &reg.servers["remote"].transport {
             Transport::Http { url, headers, .. } => {
                 assert_eq!(url, "https://example.com/mcp");
@@ -443,19 +507,86 @@ servers:
 
     #[test]
     fn profile_resolution_filters_disabled() {
-        let yaml = r#"
-schema_version: 1
-servers:
-  a: { transport: { type: stdio, command: echo } }
-  b:
-    enabled: false
-    transport: { type: stdio, command: echo }
-profiles:
-  dev:
-    servers: [a, b]
+        let toml = r#"
+schema_version = 2
+
+[servers.a.transport]
+type = "stdio"
+command = "echo"
+
+[servers.b]
+enabled = false
+
+[servers.b.transport]
+type = "stdio"
+command = "echo"
+
+[profiles.dev]
+servers = ["a", "b"]
 "#;
-        let reg: Registry = serde_yaml::from_str(yaml).unwrap();
+        let reg: Registry = toml::from_str(toml).unwrap();
         let resolved = reg.resolve_profile_servers(Some("dev")).unwrap();
         assert_eq!(resolved, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn commands_and_pre_launch_roundtrip() {
+        let toml = r#"
+schema_version = 2
+
+[commands.setup-env]
+run = ["./scripts/env.sh", "--profile", "dev"]
+description = "Prepare local env"
+timeout_ms = 10000
+
+[commands.setup-env.env]
+REGION = { source = "env", name = "AWS_REGION" }
+
+[servers.echo]
+pre_launch = [{ use = "setup-env" }, { run = ["docker", "compose", "up", "-d"], continue_on_error = true }]
+
+[servers.echo.transport]
+type = "stdio"
+command = "npx"
+"#;
+        let reg: Registry = toml::from_str(toml).unwrap();
+        let cmd = &reg.commands["setup-env"];
+        assert_eq!(cmd.run, vec!["./scripts/env.sh", "--profile", "dev"]);
+        assert_eq!(cmd.timeout_ms, Some(10_000));
+        let hooks = &reg.servers["echo"].pre_launch;
+        assert_eq!(hooks.len(), 2);
+        assert_eq!(hooks[0].use_command.as_deref(), Some("setup-env"));
+        assert!(hooks[0].run.is_none());
+        assert!(hooks[1].continue_on_error);
+        let rendered = toml::to_string(&reg).unwrap();
+        let back: Registry = toml::from_str(&rendered).unwrap();
+        assert_eq!(reg, back);
+    }
+
+    #[test]
+    fn empty_pre_launch_is_skipped_when_serializing() {
+        let mut reg = Registry::default();
+        reg.servers.insert(
+            "a".into(),
+            ServerDef {
+                enabled: true,
+                transport: Transport::Stdio {
+                    command: "echo".into(),
+                    args: vec![],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                },
+                mode: None,
+                tags: vec![],
+                timeout_ms: None,
+                startup_timeout_ms: None,
+                policy: ServerPolicy::default(),
+                description: None,
+                pre_launch: vec![],
+                source: None,
+            },
+        );
+        let rendered = toml::to_string(&reg).unwrap();
+        assert!(!rendered.contains("pre_launch"));
     }
 }

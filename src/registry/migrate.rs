@@ -39,6 +39,7 @@ pub fn migrate(
     while version < current {
         doc = match version {
             0 => migrate_v0_to_v1(doc)?,
+            1 => migrate_v1_to_v2(doc)?,
             _ => {
                 return Err(CerberusError::UnsupportedSchemaVersion {
                     found: version,
@@ -96,6 +97,22 @@ fn migrate_v0_to_v1(doc: serde_yaml::Value) -> Result<serde_yaml::Value> {
     Ok(serde_yaml::Value::Mapping(map))
 }
 
+/// v1 → v2: additive schema change (`commands` + `pre_launch`, both
+/// optional with serde defaults), so the transform only bumps the version
+/// marker — the existing document structure carries over unchanged. The
+/// format conversion (YAML → TOML) happens on the next save, not here.
+fn migrate_v1_to_v2(mut doc: serde_yaml::Value) -> Result<serde_yaml::Value> {
+    match &mut doc {
+        serde_yaml::Value::Mapping(map) => {
+            map.insert("schema_version".into(), 2.into());
+            Ok(doc)
+        }
+        _ => Err(CerberusError::Validation(
+            "cannot migrate a non-mapping document".into(),
+        )),
+    }
+}
+
 fn backup_before_migration(paths: &CerberusPaths, path: &Path) -> Result<()> {
     use std::io::Write as _;
     let text = std::fs::read_to_string(path).map_err(|source| CerberusError::Io {
@@ -124,9 +141,20 @@ mod tests {
 
     #[test]
     fn same_version_is_noop() {
-        let doc: serde_yaml::Value = serde_yaml::from_str("schema_version: 1").unwrap();
-        let out = migrate(doc.clone(), 1, Path::new("/nonexistent")).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str("schema_version: 2").unwrap();
+        let out = migrate(doc.clone(), 2, Path::new("/nonexistent")).unwrap();
         assert_eq!(doc, out);
+    }
+
+    #[test]
+    fn migrates_v1_to_v2_additively() {
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str("schema_version: 1\nservers: {}\n").unwrap();
+        let out = migrate(doc, 1, Path::new("/nonexistent")).unwrap();
+        let reg: super::super::schema::Registry = serde_yaml::from_value(out).unwrap();
+        assert_eq!(reg.schema_version, 2);
+        assert!(reg.servers.is_empty());
+        assert!(reg.commands.is_empty());
     }
 
     #[test]
@@ -151,6 +179,6 @@ mod tests {
             }
             other => panic!("expected stdio, got {other:?}"),
         }
-        assert_eq!(reg.schema_version, 1);
+        assert_eq!(reg.schema_version, 2);
     }
 }

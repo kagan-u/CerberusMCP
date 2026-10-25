@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use crate::error::{CerberusError, Result};
 use crate::registry::schema::{
-    EnvValue, HeaderValue, Registry, ServerDef, SourceDef, SourceKind, Transport,
+    CommandDef, EnvValue, HeaderValue, HookStep, Registry, ServerDef, SourceDef, SourceKind,
+    Transport,
 };
 
 const MAX_NAME_LEN: usize = 64;
@@ -37,6 +38,25 @@ pub fn validate(registry: &Registry) -> Result<()> {
             errors.extend(e.to_string().lines().map(str::to_string));
         }
         if let Err(e) = validate_server_def(name, server) {
+            errors.push(e.to_string());
+        }
+        for (i, step) in server.pre_launch.iter().enumerate() {
+            if let Some(r) = &step.use_command {
+                if !registry.commands.contains_key(r) {
+                    errors.push(format!(
+                        "servers.{name}.pre_launch[{i}].use: unknown command `{r}` \
+                         (define it under [commands.{r}])"
+                    ));
+                }
+            }
+        }
+    }
+
+    for (name, command) in &registry.commands {
+        if let Err(e) = validate_command_name(name) {
+            errors.push(e.to_string());
+        }
+        if let Err(e) = validate_command(name, command) {
             errors.push(e.to_string());
         }
     }
@@ -144,7 +164,7 @@ pub fn validate_server_def(name: &str, def: &ServerDef) -> Result<()> {
                     )));
                 }
             }
-            validate_env_map(name, env)?;
+            validate_env_map_at(&format!("servers.{name}.transport.env"), env)?;
             if let Some(cwd) = cwd {
                 if cwd.as_os_str().is_empty() {
                     return Err(CerberusError::Validation(format!(
@@ -212,10 +232,132 @@ pub fn validate_server_def(name: &str, def: &ServerDef) -> Result<()> {
         validate_tool_pattern(&format!("servers.{name}.policy.deny_tools[{i}]"), pattern)?;
     }
 
+    if !def.pre_launch.is_empty() {
+        if !matches!(def.transport, Transport::Stdio { .. }) {
+            return Err(CerberusError::Validation(format!(
+                "servers.{name}.pre_launch: only valid for stdio transports \
+                 (http upstreams are not spawned by the gateway)"
+            )));
+        }
+        for (i, step) in def.pre_launch.iter().enumerate() {
+            validate_hook_step(&format!("servers.{name}.pre_launch[{i}]"), step)?;
+        }
+    }
+
     if let Some(source) = &def.source {
         validate_source(name, source)?;
     }
 
+    Ok(())
+}
+
+/// Structural validation for one pre-launch step. Reference resolution
+/// (`use` → `[commands.<name>]`) needs registry context and lives in
+/// [`validate`].
+fn validate_hook_step(location: &str, step: &HookStep) -> Result<()> {
+    match (&step.use_command, &step.run) {
+        (Some(_), Some(_)) => {
+            return Err(CerberusError::Validation(format!(
+                "{location}: set exactly one of `use` or `run`, not both"
+            )));
+        }
+        (None, None) => {
+            return Err(CerberusError::Validation(format!(
+                "{location}: one of `use` or `run` is required"
+            )));
+        }
+        (Some(name), None) => {
+            if name.trim().is_empty() {
+                return Err(CerberusError::Validation(format!(
+                    "{location}.use: must not be empty"
+                )));
+            }
+        }
+        (None, Some(argv)) => {
+            if argv.is_empty() {
+                return Err(CerberusError::Validation(format!(
+                    "{location}.run: must not be empty"
+                )));
+            }
+            if argv[0].trim().is_empty() || argv[0].contains('\0') {
+                return Err(CerberusError::Validation(format!(
+                    "{location}.run[0]: executable must not be empty or contain NUL"
+                )));
+            }
+            for (i, arg) in argv.iter().enumerate() {
+                if arg.contains('\0') {
+                    return Err(CerberusError::Validation(format!(
+                        "{location}.run[{i}]: must not contain NUL"
+                    )));
+                }
+            }
+        }
+    }
+    if let Some(cwd) = &step.cwd {
+        if cwd.as_os_str().is_empty() {
+            return Err(CerberusError::Validation(format!(
+                "{location}.cwd: must not be empty"
+            )));
+        }
+    }
+    if let Some(t) = step.timeout_ms {
+        if t == 0 {
+            return Err(CerberusError::Validation(format!(
+                "{location}.timeout_ms: must be greater than 0"
+            )));
+        }
+    }
+    validate_env_map_at(&format!("{location}.env"), &step.env)
+}
+
+/// Validate a named `[commands.<name>]` entry.
+pub fn validate_command(name: &str, command: &CommandDef) -> Result<()> {
+    let base = format!("commands.{name}");
+    if command.run.is_empty() {
+        return Err(CerberusError::Validation(format!(
+            "{base}.run: must not be empty"
+        )));
+    }
+    if command.run[0].trim().is_empty() || command.run[0].contains('\0') {
+        return Err(CerberusError::Validation(format!(
+            "{base}.run[0]: executable must not be empty or contain NUL"
+        )));
+    }
+    for (i, arg) in command.run.iter().enumerate() {
+        if arg.contains('\0') {
+            return Err(CerberusError::Validation(format!(
+                "{base}.run[{i}]: must not contain NUL"
+            )));
+        }
+    }
+    if let Some(cwd) = &command.cwd {
+        if cwd.as_os_str().is_empty() {
+            return Err(CerberusError::Validation(format!(
+                "{base}.cwd: must not be empty"
+            )));
+        }
+    }
+    if let Some(t) = command.timeout_ms {
+        if t == 0 {
+            return Err(CerberusError::Validation(format!(
+                "{base}.timeout_ms: must be greater than 0"
+            )));
+        }
+    }
+    validate_env_map_at(&format!("{base}.env"), &command.env)
+}
+
+/// Command names share the profile charset (letters, digits, `-`, `_`).
+pub fn validate_command_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(CerberusError::Validation(format!(
+            "commands.{name}: may only contain ASCII letters, digits, `-`, and `_`"
+        )));
+    }
     Ok(())
 }
 
@@ -395,14 +537,14 @@ fn require_field(base: &str, field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_env_map(
-    server: &str,
+fn validate_env_map_at(
+    location: &str,
     env: &std::collections::BTreeMap<String, EnvValue>,
 ) -> Result<()> {
     for key in env.keys() {
         if key.is_empty() || key.contains('=') || key.contains('\0') {
             return Err(CerberusError::Validation(format!(
-                "servers.{server}.transport.env: invalid variable name `{key}`"
+                "{location}: invalid variable name `{key}`"
             )));
         }
     }
@@ -450,6 +592,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         }
     }
 
@@ -499,6 +642,7 @@ mod tests {
                 policy: ServerPolicy::default(),
                 description: None,
                 source: None,
+                pre_launch: vec![],
             },
         );
         let err = validate(&reg).unwrap_err().to_string();
@@ -559,6 +703,7 @@ mod tests {
                 policy: ServerPolicy::default(),
                 description: None,
                 source: None,
+                pre_launch: vec![],
             },
         );
         assert!(validate(&reg).is_err());

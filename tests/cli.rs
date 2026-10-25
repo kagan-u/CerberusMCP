@@ -47,7 +47,7 @@ impl Sandbox {
 
     fn init(&self) {
         self.cmd().arg("init").assert().success();
-        assert!(self.path("config/cerberus.yaml").exists());
+        assert!(self.path("config/conf.cerberus").exists());
     }
 
     fn add_stdio(&self, name: &str) {
@@ -78,7 +78,7 @@ fn init_creates_registry_and_refuses_overwrite() {
         .assert()
         .success()
         .stdout(predicate::str::contains("initialized"));
-    assert!(sb.path("config/cerberus.yaml").exists());
+    assert!(sb.path("config/conf.cerberus").exists());
     assert!(sb.path("data").exists());
 
     sb.cmd()
@@ -103,8 +103,102 @@ fn init_json_reports_paths_and_schema() {
         .stdout
         .clone();
     let v: Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(v["schema_version"], 1);
-    assert!(v["config"].as_str().unwrap().ends_with("cerberus.yaml"));
+    assert_eq!(v["schema_version"], 2);
+    assert!(v["config"].as_str().unwrap().ends_with("conf.cerberus"));
+}
+
+#[test]
+fn legacy_yaml_registry_migrates_to_conf_cerberus() {
+    let sb = Sandbox::new();
+    // Pre-v2 install: only the legacy file exists, no init was ever run.
+    fs::create_dir_all(sb.path("config")).unwrap();
+    fs::write(
+        sb.path("config/cerberus.yaml"),
+        r#"schema_version: 1
+servers:
+  legacy:
+    transport:
+      type: stdio
+      command: echo
+      args: ["hi"]
+"#,
+    )
+    .unwrap();
+
+    // Any read command converts the document: TOML appears, the legacy
+    // file is moved into the backups dir, and the data survives.
+    sb.cmd()
+        .args(["server", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("legacy"));
+
+    assert!(
+        sb.path("config/conf.cerberus").exists(),
+        "conf.cerberus written by the migration"
+    );
+    assert!(
+        !sb.path("config/cerberus.yaml").exists(),
+        "legacy file moved aside"
+    );
+    let backups: Vec<_> = fs::read_dir(sb.path("data/backups/migrations"))
+        .map(|d| d.filter_map(|e| e.ok()).collect())
+        .unwrap_or_default();
+    assert!(
+        backups
+            .iter()
+            .any(|e| { e.file_name().to_string_lossy().ends_with(".yaml.bak") }),
+        "pre-migration backup kept: {backups:?}"
+    );
+
+    let migrated = fs::read_to_string(sb.path("config/conf.cerberus")).unwrap();
+    assert!(migrated.contains("schema_version = 2"), "{migrated}");
+    assert!(migrated.contains("legacy"), "{migrated}");
+
+    // A second run is a no-op conversion (conf.cerberus now exists).
+    sb.cmd()
+        .args(["config", "validate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"));
+}
+
+#[test]
+fn config_show_redacts_literal_env_values_in_toml() {
+    let sb = Sandbox::new();
+    sb.init();
+    sb.cmd()
+        .args([
+            "server",
+            "add",
+            "svc",
+            "--command",
+            "npx",
+            "--env",
+            "TOKEN=literal:super-secret-value",
+        ])
+        .assert()
+        .success();
+
+    // The file itself keeps the value; only the rendered view redacts it.
+    let raw = fs::read_to_string(sb.path("config/conf.cerberus")).unwrap();
+    assert!(raw.contains("super-secret-value"), "{raw}");
+    assert!(raw.contains("schema_version = 2"), "{raw}");
+
+    let out = sb
+        .cmd()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let shown = String::from_utf8_lossy(&out);
+    assert!(shown.contains("<redacted>"), "{shown}");
+    assert!(
+        !shown.contains("super-secret-value"),
+        "literal leaked in config show:\n{shown}"
+    );
 }
 
 #[test]
@@ -672,15 +766,15 @@ fn install_from_registry_writes_source_and_validates() {
         .success()
         .stdout(predicate::str::contains("installed"));
 
-    let yaml = fs::read_to_string(sb.path("config/cerberus.yaml")).expect("registry");
-    assert!(yaml.contains("server-filesystem"), "{yaml}");
-    assert!(yaml.contains("kind: npm"), "{yaml}");
-    assert!(yaml.contains("@example/fs"), "{yaml}");
+    let registry = fs::read_to_string(sb.path("config/conf.cerberus")).expect("registry");
+    assert!(registry.contains("server-filesystem"), "{registry}");
+    assert!(registry.contains(r#"kind = "npm""#), "{registry}");
+    assert!(registry.contains("@example/fs"), "{registry}");
     assert!(
-        yaml.contains("name: API_KEY"),
-        "required env is recorded for doctor: {yaml}"
+        registry.contains(r#"name = "API_KEY""#),
+        "required env is recorded for doctor: {registry}"
     );
-    assert!(!yaml.contains("never-searched"));
+    assert!(!registry.contains("never-searched"));
 
     sb.cmd()
         .args(["config", "validate"])
@@ -726,7 +820,7 @@ fn install_from_local_record_needs_no_network() {
     assert_eq!(v["source"]["package"], "@example/server-filesystem");
     assert_eq!(v["source"]["runner"], "npx");
     // The named argument has no value: it must be warned about, never invented.
-    let installed = fs::read_to_string(sb.path("config/cerberus.yaml")).unwrap();
+    let installed = fs::read_to_string(sb.path("config/conf.cerberus")).unwrap();
     assert!(!installed.contains("allowed-directories"), "{installed}");
 }
 
@@ -746,10 +840,10 @@ fn install_dry_run_reports_without_writing() {
         .success()
         .stdout(predicate::str::contains("would install as"));
 
-    let yaml = fs::read_to_string(sb.path("config/cerberus.yaml")).unwrap();
+    let registry = fs::read_to_string(sb.path("config/conf.cerberus")).unwrap();
     assert!(
-        !yaml.contains("server-filesystem"),
-        "nothing written:\n{yaml}"
+        !registry.contains("server-filesystem"),
+        "nothing written:\n{registry}"
     );
 
     sb.cmd()
@@ -781,20 +875,20 @@ fn doctor_reports_unset_source_requirements() {
     // Hand-written entry: `source` documents a required variable that the
     // transport does not bind at all.
     fs::write(
-        sb.path("config/cerberus.yaml"),
-        r#"schema_version: 1
-servers:
-  svc:
-    transport:
-      type: stdio
-      command: npx
-      args: []
-    source:
-      kind: npm
-      package: example-pkg
-      env:
-        - name: CERBERUS_TEST_REQUIRED_VAR
-          required: true
+        sb.path("config/conf.cerberus"),
+        r#"schema_version = 2
+
+[servers.svc.transport]
+type = "stdio"
+command = "npx"
+
+[servers.svc.source]
+kind = "npm"
+package = "example-pkg"
+
+[[servers.svc.source.env]]
+name = "CERBERUS_TEST_REQUIRED_VAR"
+required = true
 "#,
     )
     .unwrap();
@@ -844,4 +938,170 @@ servers:
             .any(|m| m.contains("CERBERUS_TEST_REQUIRED_VAR")),
         "variable is set now: {messages:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
+
+fn append_toml(sb: &Sandbox, block: &str) {
+    let path = sb.path("config/conf.cerberus");
+    let mut content = fs::read_to_string(&path).expect("read registry");
+    content.push('\n');
+    content.push_str(block);
+    fs::write(&path, content).expect("write registry");
+}
+
+fn toml_argv(argv: &[&str]) -> String {
+    let items: Vec<String> = argv.iter().map(|a| format!("{a:?}")).collect();
+    format!("[{}]", items.join(", "))
+}
+
+#[test]
+fn run_lists_and_executes_registry_commands() {
+    let sb = Sandbox::new();
+    sb.init();
+    fs::create_dir_all(sb.path("workdir")).unwrap();
+
+    // Shell differs per platform; everything else is portable.
+    let (echo, exit7, echo_env, pwd, slow) = if cfg!(windows) {
+        (
+            vec!["cmd", "/C", "echo hello-from-run"],
+            vec!["cmd", "/C", "exit 7"],
+            vec!["cmd", "/C", "echo %RUN_VAR%"],
+            vec!["cmd", "/C", "cd"],
+            vec!["ping", "-n", "6", "127.0.0.1"],
+        )
+    } else {
+        (
+            vec!["sh", "-c", "echo hello-from-run"],
+            vec!["sh", "-c", "exit 7"],
+            vec!["sh", "-c", "echo $RUN_VAR"],
+            vec!["sh", "-c", "pwd"],
+            vec!["sh", "-c", "sleep 5"],
+        )
+    };
+    let cwd = sb.path("workdir").to_string_lossy().replace('\\', "/");
+    let block = format!(
+        r#"
+[commands.hello]
+run = {}
+description = "print a greeting"
+
+[commands.boom]
+run = {}
+
+[commands.envcheck]
+run = {}
+env = {{ RUN_VAR = {{ source = "literal", value = "42" }} }}
+
+[commands.cwddir]
+run = {}
+cwd = "{}"
+
+[commands.slow]
+run = {}
+timeout_ms = 500
+"#,
+        toml_argv(&echo),
+        toml_argv(&exit7),
+        toml_argv(&echo_env),
+        toml_argv(&pwd),
+        cwd,
+        toml_argv(&slow),
+    );
+    append_toml(&sb, &block);
+
+    // No name → list available commands.
+    sb.cmd()
+        .arg("run")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello"));
+    let out = sb
+        .cmd()
+        .args(["run", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list: Value = serde_json::from_slice(&out).unwrap();
+    assert!(
+        list.as_array()
+            .expect("command array")
+            .iter()
+            .any(|c| c["name"] == "boom")
+    );
+
+    // Execute: stdout streams through.
+    sb.cmd()
+        .args(["run", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hello-from-run"));
+
+    // Registry env bindings overlay the inherited environment.
+    sb.cmd()
+        .args(["run", "envcheck"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+
+    // cwd is honored.
+    sb.cmd()
+        .args(["run", "cwddir"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("workdir"));
+
+    // Child exit code passes through untouched.
+    sb.cmd().args(["run", "boom"]).assert().code(7);
+
+    // Unknown command → NotFound (exit 5).
+    sb.cmd()
+        .args(["run", "nope"])
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("not defined"));
+
+    // --json reports the structured result alongside the passthrough code.
+    let out = sb
+        .cmd()
+        .args(["run", "boom", "--json"])
+        .assert()
+        .code(7)
+        .get_output()
+        .stdout
+        .clone();
+    let result: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(result["command"], "boom");
+    assert_eq!(result["exit_code"], 7);
+    assert!(result["duration_ms"].as_u64().is_some());
+    assert!(result["argv"].as_array().is_some());
+}
+
+#[test]
+fn run_enforces_command_timeout() {
+    let sb = Sandbox::new();
+    sb.init();
+    let (slow, timeout_ms) = if cfg!(windows) {
+        (vec!["ping", "-n", "6", "127.0.0.1"], 500)
+    } else {
+        (vec!["sh", "-c", "sleep 5"], 500)
+    };
+    append_toml(
+        &sb,
+        &format!(
+            "[commands.slow]\nrun = {}\ntimeout_ms = {}\n",
+            toml_argv(&slow),
+            timeout_ms
+        ),
+    );
+
+    sb.cmd()
+        .args(["run", "slow"])
+        .assert()
+        .code(7)
+        .stderr(predicate::str::contains("timed out"));
 }

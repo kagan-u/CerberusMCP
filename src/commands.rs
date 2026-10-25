@@ -59,12 +59,13 @@ pub async fn dispatch(ctx: &Ctx, command: Command) -> Result<i32> {
         Command::Health => cmd_health(ctx).await,
         Command::Logs { lines } => cmd_logs(ctx, lines).await,
         Command::Version => cmd_version(ctx),
+        Command::Run { name, args } => cmd_run(ctx, name, args).await,
         Command::Completions { shell } => cmd_completions(ctx, &shell),
     }
 }
 
 fn load_store(ctx: &Ctx) -> Result<RegistryStore> {
-    RegistryStore::load(&ctx.paths.registry_file)
+    RegistryStore::load_with_migration(&ctx.paths)
 }
 
 fn save_store(_ctx: &Ctx, store: &mut RegistryStore) -> Result<()> {
@@ -84,6 +85,26 @@ async fn cmd_init(ctx: &Ctx, force: bool) -> Result<i32> {
             "{} already exists (use --force to overwrite; a backup will be created)",
             path.display()
         )));
+    }
+    let legacy = ctx
+        .paths
+        .config_dir
+        .join(crate::paths::LEGACY_REGISTRY_FILE_NAME);
+    if !path.exists() && legacy.is_file() {
+        if !force {
+            return Err(CerberusError::Other(format!(
+                "a legacy {} exists next to {}; run any read command \
+                 (e.g. `cerberus server list`) to migrate it, or pass --force \
+                 to start fresh (a backup of the legacy file will be kept)",
+                crate::paths::LEGACY_REGISTRY_FILE_NAME,
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "conf.cerberus".into())
+            )));
+        }
+        if let Err(e) = crate::backup::create(&ctx.paths, &legacy, Some("pre-init-legacy")) {
+            tracing::warn!(error = %e, "could not back up legacy registry before init --force");
+        }
     }
     if path.exists() {
         crate::backup::create(&ctx.paths, &path, Some("pre-init"))?;
@@ -195,10 +216,21 @@ async fn cmd_config(ctx: &Ctx, command: ConfigCommand) -> Result<i32> {
             if ctx.json {
                 ctx.emit_json(&store.registry);
             } else {
-                // Redacted human rendering: env/header values replaced.
-                let text = serde_yaml::to_string(&store.registry)
-                    .map_err(|e| CerberusError::Other(e.to_string()))?;
-                ctx.out(&redact_yaml(&text));
+                // Redacted human rendering, in the same format as the file.
+                let format = crate::registry::toml_io::format_for_path(&store.path);
+                let text = match format {
+                    crate::registry::RegistryFormat::Toml => {
+                        crate::registry::toml_io::registry_to_toml(&store.registry)
+                            .map_err(|e| CerberusError::Other(e.to_string()))?
+                    }
+                    crate::registry::RegistryFormat::Yaml => serde_yaml::to_string(&store.registry)
+                        .map_err(|e| CerberusError::Other(e.to_string()))?,
+                };
+                let redacted = match format {
+                    crate::registry::RegistryFormat::Toml => redact_toml(&text),
+                    crate::registry::RegistryFormat::Yaml => redact_yaml(&text),
+                };
+                ctx.out(&redacted);
             }
             Ok(ExitCode::Success as i32)
         }
@@ -240,6 +272,179 @@ fn redact_yaml(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// Redact literal values and Authorization headers in a TOML rendering.
+///
+/// Only `EnvValue::Literal` emits a `value = "..."` key (commands, hooks,
+/// and transports have no other field named `value`), so redacting every
+/// `value` scalar is both conservative and complete.
+fn redact_toml(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim_start();
+            let lower = trimmed.to_ascii_lowercase();
+            let is_auth = lower.starts_with("authorization")
+                && lower["authorization".len()..].trim_start().starts_with('=');
+            if is_auth {
+                return redact_quoted_after(line, line.find('=').unwrap_or(0));
+            }
+            if let Some(idx) = line.find("value = \"") {
+                return redact_quoted_after(line, idx);
+            }
+            line.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Replace the quoted string starting at (or after) `from` with `<redacted>`,
+/// keeping everything outside the first…last quote intact.
+fn redact_quoted_after(line: &str, from: usize) -> String {
+    let bytes = line.as_bytes();
+    let Some(open_rel) = bytes[from.min(bytes.len())..]
+        .iter()
+        .position(|b| *b == b'"')
+    else {
+        return line.to_string();
+    };
+    let open = from + open_rel;
+    let Some(close_rel) = bytes[open + 1..].iter().rposition(|b| *b == b'"') else {
+        return line.to_string();
+    };
+    let close = open + 1 + close_rel;
+    format!("{}<redacted>{}", &line[..open + 1], &line[close..])
+}
+
+// ---------------------------------------------------------------------------
+// run
+// ---------------------------------------------------------------------------
+
+/// Run a named `[commands.*]` entry, or list available commands when no name
+/// is given. The child's environment is the full process environment with the
+/// command's registry bindings overlaid; its exit code is passed through.
+async fn cmd_run(ctx: &Ctx, name: Option<String>, extra: Vec<String>) -> Result<i32> {
+    let store = load_store(ctx)?;
+    validate::validate(&store.registry)?;
+
+    let Some(name) = name else {
+        if ctx.json {
+            let entries: Vec<_> = store
+                .registry
+                .commands
+                .iter()
+                .map(|(n, c)| {
+                    serde_json::json!({
+                        "name": n,
+                        "run": c.run,
+                        "description": c.description,
+                        "timeout_ms": c.timeout_ms,
+                    })
+                })
+                .collect();
+            ctx.emit_json(&entries);
+        } else if store.registry.commands.is_empty() {
+            ctx.out("no commands defined ([commands.<name>] in the registry)");
+        } else {
+            for (n, c) in &store.registry.commands {
+                let value = c.description.as_deref().unwrap_or("");
+                ctx.status(n, value);
+            }
+        }
+        return Ok(ExitCode::Success as i32);
+    };
+
+    let command = store.registry.commands.get(&name).ok_or_else(|| {
+        CerberusError::NotFound(format!(
+            "command `{name}` is not defined (add it under [commands.{name}])"
+        ))
+    })?;
+
+    let mut argv = command.run.clone();
+    argv.extend(extra);
+
+    let secrets = crate::secrets::SecretStore::default();
+    let mut child = tokio::process::Command::new(&argv[0]);
+    child.args(&argv[1..]);
+    for (key, value) in &command.env {
+        child.env(key, secrets.resolve_env_value(value)?);
+    }
+    if let Some(cwd) = &command.cwd {
+        child.current_dir(crate::paths::expand_tilde(cwd));
+    }
+
+    // `--json` captures the child's output so the final JSON document stays
+    // machine-parseable; otherwise the child shares this process's stdio.
+    let capture = ctx.json;
+    if capture {
+        child.stdin(std::process::Stdio::null());
+        child.stdout(std::process::Stdio::piped());
+        child.stderr(std::process::Stdio::piped());
+    }
+
+    let started = std::time::Instant::now();
+    let mut proc = child
+        .spawn()
+        .map_err(|source| CerberusError::ProcessSpawn {
+            command: argv[0].clone(),
+            source,
+        })?;
+
+    let (stdout_pipe, stderr_pipe) = if capture {
+        (proc.stdout.take(), proc.stderr.take())
+    } else {
+        (None, None)
+    };
+    let read_stdout = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stdout_pipe {
+            let _ = pipe.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let read_stderr = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut pipe) = stderr_pipe {
+            let _ = pipe.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    let to_spawn_err = |source: std::io::Error| CerberusError::ProcessSpawn {
+        command: argv[0].clone(),
+        source,
+    };
+    let wait = proc.wait();
+    let status = if let Some(ms) = command.timeout_ms {
+        match tokio::time::timeout(std::time::Duration::from_millis(ms), wait).await {
+            Ok(res) => res.map_err(to_spawn_err)?,
+            Err(_) => {
+                let _ = proc.start_kill();
+                let _ = proc.wait().await;
+                return Err(CerberusError::Timeout { timeout_ms: ms });
+            }
+        }
+    } else {
+        wait.await.map_err(to_spawn_err)?
+    };
+    let code = status.code().unwrap_or(1);
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    if capture {
+        let stdout = String::from_utf8_lossy(&read_stdout.await.unwrap_or_default()).into_owned();
+        let stderr = String::from_utf8_lossy(&read_stderr.await.unwrap_or_default()).into_owned();
+        ctx.emit_json(&serde_json::json!({
+            "command": name,
+            "argv": argv,
+            "exit_code": code,
+            "duration_ms": duration_ms,
+            "stdout": stdout,
+            "stderr": stderr,
+        }));
+    }
+    Ok(code)
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +573,7 @@ async fn cmd_server(ctx: &Ctx, command: ServerCommand) -> Result<i32> {
                 policy: ServerPolicy::default(),
                 description,
                 source: None,
+                pre_launch: vec![],
             };
             store.add_server(&name, def.clone())?;
             save_store(ctx, &mut store)?;
@@ -713,6 +919,7 @@ async fn cmd_install(
         policy: ServerPolicy::default(),
         description: planned.description.clone(),
         source: planned.source.clone(),
+        pre_launch: vec![],
     };
     validate::validate_server_def(&name, &def)?;
 

@@ -167,6 +167,15 @@ pub enum Command {
     /// Print version and protocol information.
     Version,
 
+    /// Run a named [commands.*] entry from the registry.
+    Run {
+        /// Command name; omit to list available commands.
+        name: Option<String>,
+        /// Extra arguments appended to the command's argv (after `--`).
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+
     /// Generate shell completions.
     Completions {
         /// Target shell: bash, elvish, fish, PowerShell, zsh.

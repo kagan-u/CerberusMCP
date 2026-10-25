@@ -93,9 +93,12 @@ instead of guessing a launcher. See [`docs/registry.md`](docs/registry.md).
 
 ### Registry
 
-One YAML file (`schema_version: 1`), validated on load and on save. See
+One TOML file (`conf.cerberus`, `schema_version = 2`), validated on load and
+on save; legacy `cerberus.yaml` documents migrate automatically. It also
+defines reusable `[commands.*]` (`cerberus run <name>`) and per-server
+`pre_launch` hooks the gateway runs before spawning an MCP server. See
 [`schemas/registry.schema.json`](schemas/registry.schema.json) and the
-annotated [`examples/registry.yaml`](examples/registry.yaml).
+annotated [`examples/conf.cerberus`](examples/conf.cerberus).
 
 ### Profiles
 

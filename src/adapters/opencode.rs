@@ -541,6 +541,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         }
     }
 

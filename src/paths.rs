@@ -8,12 +8,17 @@ const PROJECT_QUALIFIER: &str = "dev";
 const PROJECT_ORGANIZATION: &str = "cerberus-mcp";
 const PROJECT_NAME: &str = "cerberus-mcp";
 
+/// Default registry file name (TOML, schema v2).
+pub const REGISTRY_FILE_NAME: &str = "conf.cerberus";
+/// Legacy YAML registry file name, still read and migrated on first access.
+pub const LEGACY_REGISTRY_FILE_NAME: &str = "cerberus.yaml";
+
 /// Resolved filesystem locations for configuration, data, and logs.
 ///
 /// Every location can be overridden with an environment variable so tests and
 /// CI never touch real user configuration:
 ///
-/// - `CERBERUS_CONFIG_DIR`  — directory containing `cerberus.yaml`
+/// - `CERBERUS_CONFIG_DIR`  — directory containing `conf.cerberus`
 /// - `CERBERUS_DATA_DIR`    — backups, managed-entry state, logs
 /// - `CERBERUS_CONFIG_FILE` — explicit path to the registry file
 #[derive(Debug, Clone)]
@@ -61,7 +66,7 @@ impl CerberusPaths {
         });
         let registry_file = match std::env::var_os("CERBERUS_CONFIG_FILE") {
             Some(file) => PathBuf::from(file),
-            None => config_dir.join("cerberus.yaml"),
+            None => config_dir.join(REGISTRY_FILE_NAME),
         };
 
         Ok(Self {
@@ -89,7 +94,7 @@ impl CerberusPaths {
     /// Construct paths rooted at explicit directories (used by tests and
     /// `--config` overrides).
     pub fn with_roots(config_dir: PathBuf, data_dir: PathBuf) -> Self {
-        let registry_file = config_dir.join("cerberus.yaml");
+        let registry_file = config_dir.join(REGISTRY_FILE_NAME);
         Self {
             config_dir,
             data_dir,
@@ -192,7 +197,10 @@ mod tests {
         // test-friendly constructor and must produce consistent layout.
         let paths =
             CerberusPaths::with_roots(PathBuf::from("/tmp/cfg"), PathBuf::from("/tmp/data"));
-        assert_eq!(paths.registry_file, PathBuf::from("/tmp/cfg/cerberus.yaml"));
+        assert_eq!(
+            paths.registry_file,
+            PathBuf::from(format!("/tmp/cfg/{REGISTRY_FILE_NAME}"))
+        );
         assert_eq!(paths.backups_dir(), PathBuf::from("/tmp/data/backups"));
         assert_eq!(
             paths.gateway_state_file(),

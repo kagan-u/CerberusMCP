@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Registry schema **v2** (`schema_version = 2`) with two additive features:
+  - Top-level `[commands.*]`: named, reusable executables run via the new
+    `cerberus run <name> [-- <extra args...>]` (no name → lists commands;
+    `--json` reports `{command, argv, exit_code, duration_ms, stdout, stderr}`).
+    The child inherits the process environment with the command's registry
+    bindings overlaid; its exit code passes through unchanged and
+    `timeout_ms` maps to exit code `7`.
+  - Per-server `pre_launch`: ordered hook steps (`use = "…"` referencing a
+    command, or an inline `run` vector) executed before a `stdio` server's
+    process is spawned. Exactly one of `use`/`run`; per-step `cwd`, `env`,
+    `timeout_ms`, `continue_on_error`. Validated at registry load
+    (`stdio`-only, command references must exist).
+- The registry is now written as **TOML** at `conf.cerberus`; `config show`
+  redacts `secret_ref`/`literal` env values in TOML output, `backup restore`
+  accepts either format (detected by content), and `cerberus init` refuses to
+  overwrite a legacy `cerberus.yaml` without `--force`.
+
+### Changed
+
+- The default registry path is `<config dir>/conf.cerberus`. An existing
+  `cerberus.yaml` (schema v0/v1) is migrated in place on first access: the
+  file is re-saved as `conf.cerberus` at schema v2 and the original moved to
+  `<data>/backups/migrations/`.
+
 ## [0.2.0] - 2026-10-25
 
 ### Added

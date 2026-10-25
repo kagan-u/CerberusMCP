@@ -1,52 +1,112 @@
 # The registry
 
 The registry is the canonical, client-independent list of MCP servers: one
-YAML file, `schema_version: 1`, validated on load and on save. It is the only
-state CerberusMCP owns — client configs are *derived* from it on `sync`, and
-the gateway *reads* it. Nothing writes back into the registry from either.
+TOML file, `conf.cerberus`, `schema_version = 2`, validated on load and on
+save. It is the only state CerberusMCP owns — client configs are *derived*
+from it on `sync`, and the gateway *reads* it. Nothing writes back into the
+registry from either.
 
 | Path | Purpose |
 | --- | --- |
-| `CERBERUS_CONFIG_DIR/cerberus.yaml` | the registry |
+| `CERBERUS_CONFIG_DIR/conf.cerberus` | the registry (TOML) |
 | `CERBERUS_CONFIG_FILE` | exact registry file path (overrides the dir) |
 | `CERBERUS_DATA_DIR` | backups, sync state, logs, registry search cache |
 | `CERBERUS_REGISTRY_URL` | registry endpoint used by `search`/`install` |
 
+**Legacy installs:** an existing `cerberus.yaml` (`schema_version: 0/1`) is
+migrated automatically on first access — the content is parsed and upgraded,
+written to `conf.cerberus`, and the original file is moved into
+`<data>/backups/migrations/` alongside a pre-migration copy. An explicit
+`CERBERUS_CONFIG_FILE`/`--config` path is never auto-migrated; reading it
+works for both formats (detection is content-based), and the format of new
+writes follows the file extension (`.yaml`/`.yml` → YAML, anything else →
+TOML).
+
 The machine-readable contract lives in
 [`schemas/registry.schema.json`](../schemas/registry.schema.json); the
-annotated example is [`examples/registry.yaml`](../examples/registry.yaml).
+annotated example is [`examples/conf.cerberus`](../examples/conf.cerberus).
 
 ## Document shape
 
-```yaml
-schema_version: 1
+```toml
+schema_version = 2
+active_profile = "dev"           # optional default profile
 
-settings:
-  default_mode: direct          # direct | gateway
+[settings]
+default_mode = "direct"          # direct | gateway
 
-servers:
-  <name>:                       # [a-z0-9-], no `__`, ≤ 64 chars
-    enabled: true
-    transport:                  # exactly one of stdio | http
-      type: stdio
-      command: npx
-      args: ["-y", "@modelcontextprotocol/server-filesystem"]
-      env: { KEY: { source: env, name: KEY } }   # env | secret | literal
-    mode: gateway               # optional override of settings.default_mode
-    tags: [local]
-    timeout_ms: 30000
-    startup_timeout_ms: 15000
-    policy: { deny_tools: ["delete_*"] }
-    description: ...
-    source: { ... }             # install provenance; see below
+[servers.<name>]                 # [a-z0-9-], no `__`, ≤ 64 chars
+enabled = true
+tags = ["local"]
+timeout_ms = 30000
+startup_timeout_ms = 15000
+description = "..."
+pre_launch = [{ use = "bootstrap" }]   # see "Commands and pre-launch hooks"
 
-profiles:
-  <name>: { servers: [a, b] }
-active_profile: <name>
+[servers.<name>.transport]       # exactly one of stdio | http
+type = "stdio"
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem"]
+env = { KEY = { source = "env", name = "KEY" } }   # env | secret | literal
+
+[servers.<name>.policy]
+deny_tools = ["delete_*"]
+
+profiles = {}                    # see below: [profiles.<name>]
+```
+
+Profiles are tables of server lists:
+
+```toml
+[profiles.dev]
+servers = ["a", "b"]
+description = "everything for local development"
 ```
 
 Validation is strict: unknown fields are rejected (`deny_unknown_fields`)
 everywhere, so a typo fails at load time instead of being silently ignored.
+
+## Commands and pre-launch hooks
+
+`[commands.<name>]` defines reusable commands — plain exec vectors, never an
+implicit shell (a runner that needs shell semantics spells it out:
+`run = ["sh", "-c", "..."]`):
+
+```toml
+[commands.bootstrap]
+run = ["./scripts/env.sh", "--profile", "dev"]
+description = "prepare the local environment"
+cwd = "~/src/my-project"
+timeout_ms = 10000
+env = { REGION = { source = "env", name = "AWS_REGION" } }
+```
+
+Run one with `cerberus run <name> [-- <extra args...>]`.
+
+A stdio server can declare steps that must succeed before it is spawned:
+
+```toml
+[servers.mcp]
+pre_launch = [
+  { use = "bootstrap" },                          # reference a [commands.*] entry
+  { run = ["docker", "compose", "up", "-d"], timeout_ms = 60000 },
+  { run = ["true"], continue_on_error = true },   # failure logs, connect continues
+]
+
+[servers.mcp.transport]
+type = "stdio"
+command = "npx"
+```
+
+Rules (enforced by `config validate`):
+
+* each step sets exactly one of `use` or `run`;
+* `use` must name an existing `[commands.<name>]` entry;
+* `pre_launch` is only valid on `stdio` transports — the gateway spawns
+  those processes itself; direct-mode client adapters cannot express hooks
+  and ignore the block (the gateway is where hooks run);
+* per-step `timeout_ms` (default 30 s), `cwd`, `env`, and
+  `continue_on_error` behave like their command counterparts.
 
 ## The `source` block
 

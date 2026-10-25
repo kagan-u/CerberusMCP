@@ -4,120 +4,260 @@
   "title": "CerberusMCP registry",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "servers"],
+  "required": [
+    "schema_version"
+  ],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
     "settings": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "default_mode": { "enum": ["direct", "gateway"] },
-        "log_level": { "type": "string", "enum": ["error", "warn", "info", "debug", "trace"] }
+        "default_mode": {
+          "enum": [
+            "direct",
+            "gateway"
+          ]
+        },
+        "log_level": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ]
+        }
       }
     },
-    "active_profile": { "type": ["string", "null"] },
+    "commands": {
+      "type": "object",
+      "description": "Named reusable commands, runnable with `cerberus run <name>` and referenceable from server pre_launch hooks.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/command"
+      }
+    },
+    "active_profile": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "profiles": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["servers"],
+        "required": [
+          "servers"
+        ],
         "properties": {
           "servers": {
             "type": "array",
-            "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" }
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]*$"
+            }
           }
         }
       }
     },
     "servers": {
       "type": "object",
-      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*$" },
-      "additionalProperties": { "$ref": "#/$defs/server" }
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/server"
+      }
     }
   },
   "$defs": {
     "server": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["transport"],
+      "required": [
+        "transport"
+      ],
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "transport": { "oneOf": [{ "$ref": "#/$defs/stdio" }, { "$ref": "#/$defs/http" }] },
-        "mode": { "enum": ["direct", "gateway"] },
-        "tags": { "type": "array", "items": { "type": "string" } },
-        "timeout_ms": { "type": "integer", "minimum": 1 },
-        "startup_timeout_ms": { "type": "integer", "minimum": 1 },
-        "policy": { "$ref": "#/$defs/policy" },
-        "description": { "type": "string" },
-      "source": {
-        "$ref": "#/$defs/source"
-      }
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "transport": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/stdio"
+            },
+            {
+              "$ref": "#/$defs/http"
+            }
+          ]
+        },
+        "mode": {
+          "enum": [
+            "direct",
+            "gateway"
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "startup_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "policy": {
+          "$ref": "#/$defs/policy"
+        },
+        "description": {
+          "type": "string"
+        },
+        "pre_launch": {
+          "type": "array",
+          "description": "Steps executed before this stdio server's process is spawned (gateway only; direct-mode adapters ignore this block).",
+          "items": {
+            "$ref": "#/$defs/hook_step"
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
       }
     },
     "stdio": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "command"],
+      "required": [
+        "type",
+        "command"
+      ],
       "properties": {
-        "type": { "const": "stdio" },
-        "command": { "type": "string", "minLength": 1 },
-        "args": { "type": "array", "items": { "type": "string" } },
+        "type": {
+          "const": "stdio"
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "env": {
           "type": "object",
-          "additionalProperties": { "$ref": "#/$defs/env_value" }
+          "additionalProperties": {
+            "$ref": "#/$defs/env_value"
+          }
         },
-        "cwd": { "type": "string" }
+        "cwd": {
+          "type": "string"
+        }
       }
     },
     "http": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "url"],
+      "required": [
+        "type",
+        "url"
+      ],
       "properties": {
-        "type": { "const": "http" },
-        "url": { "type": "string", "pattern": "^https?://" },
+        "type": {
+          "const": "http"
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https?://"
+        },
         "headers": {
           "type": "object",
           "additionalProperties": {
             "oneOf": [
-              { "$ref": "#/$defs/env_value" },
-              { "type": "string" }
+              {
+                "$ref": "#/$defs/env_value"
+              },
+              {
+                "type": "string"
+              }
             ]
           }
         },
-        "bearer_token": { "$ref": "#/$defs/env_value" }
+        "bearer_token": {
+          "$ref": "#/$defs/env_value"
+        }
       }
     },
     "env_value": {
       "type": "object",
-      "required": ["source"],
+      "required": [
+        "source"
+      ],
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["source", "name"],
+          "required": [
+            "source",
+            "name"
+          ],
           "properties": {
-            "source": { "const": "env" },
-            "name": { "type": "string", "minLength": 1 }
+            "source": {
+              "const": "env"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["source", "name"],
+          "required": [
+            "source",
+            "name"
+          ],
           "properties": {
-            "source": { "const": "secret_ref" },
-            "name": { "type": "string", "minLength": 1 }
+            "source": {
+              "const": "secret_ref"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["source", "value"],
+          "required": [
+            "source",
+            "value"
+          ],
           "properties": {
-            "source": { "const": "literal" },
-            "value": { "type": "string" }
+            "source": {
+              "const": "literal"
+            },
+            "value": {
+              "type": "string"
+            }
           }
         }
       ]
@@ -128,25 +268,39 @@
       "properties": {
         "allow_tools": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "When non-empty, only these tools are permitted. Trailing `*` wildcard allowed."
         },
         "deny_tools": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Tools that may never be called. Evaluated after allow_tools."
         },
-        "require_confirmation": { "type": "boolean", "default": false }
+        "require_confirmation": {
+          "type": "boolean",
+          "default": false
+        }
       }
     },
     "source": {
       "description": "Install provenance for `cerberus search` and `cerberus install`. Ignored by the gateway and by client adapters.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
-          "enum": ["npm", "pypi", "git", "binary"]
+          "enum": [
+            "npm",
+            "pypi",
+            "git",
+            "binary"
+          ]
         },
         "package": {
           "type": "string",
@@ -166,7 +320,9 @@
         },
         "args": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Positional arguments given to the runner (e.g. `-y`)."
         },
         "url": {
@@ -180,14 +336,18 @@
         "env": {
           "type": "array",
           "description": "Environment variables the server documents; `cerberus doctor` reports missing ones.",
-          "items": { "$ref": "#/$defs/source_env" }
+          "items": {
+            "$ref": "#/$defs/source_env"
+          }
         }
       }
     },
     "source_env": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name"],
+      "required": [
+        "name"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -203,6 +363,109 @@
         },
         "description": {
           "type": "string"
+        }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run"
+      ],
+      "properties": {
+        "run": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Executable + arguments, executed directly (no implicit shell)."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Working directory; `~` expands to home."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/env_value"
+          }
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "hook_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Exactly one of `use` or `run` must be set.",
+      "oneOf": [
+        {
+          "required": [
+            "use"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "run"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "run"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "use"
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "use": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of a [commands.<name>] entry to run."
+        },
+        "run": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "description": "Inline executable + arguments (alternative to `use`)."
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/env_value"
+          }
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-step timeout (default 30000)."
+        },
+        "continue_on_error": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log-and-continue instead of aborting the connect."
         }
       }
     }

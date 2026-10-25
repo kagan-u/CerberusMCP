@@ -569,6 +569,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         };
         let servers = BTreeMap::from([("mine".to_string(), def)]);
         let managed = ClientManagedState::default();
@@ -620,6 +621,7 @@ mod tests {
             policy: ServerPolicy::default(),
             description: None,
             source: None,
+            pre_launch: vec![],
         };
         if let Transport::Stdio { env, .. } = &mut def.transport {
             env.insert(
