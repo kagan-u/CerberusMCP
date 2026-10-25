@@ -38,13 +38,15 @@ fn argv_toml(argv: &[String]) -> String {
     items.join(", ")
 }
 
-/// A portable "append `token` to file" argv (raw path, no pre-escaping).
+/// A portable "append `token` to file" argv. The name is relative and the
+/// step/command cwd carries the directory: cmd.exe does not honour Rust's
+/// `\"` escapes, so quoted paths break redirects there.
 fn append_argv(file: &Path, token: &str) -> Vec<String> {
-    let p = file.display().to_string();
+    let name = file.file_name().unwrap().to_string_lossy().into_owned();
     if cfg!(windows) {
-        vec!["cmd".into(), "/C".into(), format!("echo {token}>>\"{p}\"")]
+        vec!["cmd".into(), "/C".into(), format!("echo {token}>>{name}")]
     } else {
-        vec!["sh".into(), "-c".into(), format!("echo {token} >> \"{p}\"")]
+        vec!["sh".into(), "-c".into(), format!("echo {token} >> {name}")]
     }
 }
 
@@ -70,15 +72,22 @@ fn shell_toml(argv: &[String]) -> String {
 fn write_registry(root: &Path, extra_server_toml: &str, prepare: &Path) {
     fs::create_dir_all(root.join("config")).ok();
     fs::create_dir_all(root.join("data")).ok();
+    let cwd = prepare
+        .parent()
+        .expect("marker has a parent")
+        .display()
+        .to_string();
     let registry = format!(
         r#"schema_version = 2
 
 [commands.prepare]
 run = [{prepare}]
+cwd = {cwd:?}
 
 {extra}
 "#,
         prepare = argv_toml(&append_argv(prepare, "P")),
+        cwd = cwd,
         extra = extra_server_toml,
     );
     fs::write(root.join("config/conf.cerberus"), registry).expect("write registry");
@@ -163,8 +172,9 @@ fn gateway_runs_use_and_inline_pre_launch_steps() {
     // Step 1: `use = "prepare"` resolves `[commands.prepare]`.
     // Step 2: an inline `run` vector.
     let inline = format!(
-        "{{ run = [{}] }}",
-        argv_toml(&append_argv(&marker_inline, "I"))
+        "{{ run = [{}], cwd = {:?} }}",
+        argv_toml(&append_argv(&marker_inline, "I")),
+        marker_inline.parent().expect("marker has a parent")
     );
     let server = hooked_server_toml(&format!("{{ use = \"prepare\" }}, {inline}"));
     write_registry(root.path(), &server, &marker_cmd);

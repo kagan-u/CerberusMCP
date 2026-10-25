@@ -267,13 +267,17 @@ mod tests {
     }
 
     /// A command appending `token` to `file`, portable across platforms.
+    /// Runs in the file's directory with a bare relative name: cmd.exe does
+    /// not honour Rust's `\"` escapes, so quoted paths break redirects.
     fn append_step(file: &std::path::Path, token: &str) -> HookStep {
-        let p = file.display().to_string().replace('"', "\"\"");
-        if cfg!(windows) {
-            hook_run(&["cmd", "/C", &format!("echo {token}>>\"{p}\"")])
+        let name = file.file_name().unwrap().to_string_lossy().into_owned();
+        let mut step = if cfg!(windows) {
+            hook_run(&["cmd", "/C", &format!("echo {token}>>{name}")])
         } else {
-            hook_run(&["sh", "-c", &format!("echo {token} >> \"{p}\"")])
-        }
+            hook_run(&["sh", "-c", &format!("echo {token} >> {name}")])
+        };
+        step.cwd = Some(file.parent().unwrap().to_string_lossy().replace('\\', "/"));
+        step
     }
 
     #[tokio::test]
@@ -416,7 +420,7 @@ mod tests {
                 run: vec![
                     "cmd".into(),
                     "/C".into(),
-                    "if not exist \"marker.txt\" exit /b 2".into(),
+                    "if not exist marker.txt exit /b 2".into(),
                 ],
                 cwd: None,
                 env: BTreeMap::new(),
