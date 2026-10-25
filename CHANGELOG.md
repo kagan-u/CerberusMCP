@@ -33,8 +33,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SDKs never split the `{server}__{tool}` public name (contract documented
   in `docs/gateway.md`).
 
+### Changed
+
+- Upgrade `rmcp` 3.5.1 → 3.7.0 (protocol 2026-07-28 model, `resultType` and
+  cache-hint machinery).
+
 ### Fixed
 
+- `gateway start --transport stdio` no longer prints the startup banner on
+  stdout: prose on the MCP channel broke strict clients (the official Python
+  SDK rejects non-JSON-RPC lines). For stdio the banner and status lines go
+  to stderr; stdout stays JSON-RPC-only.
+- `tools/call` results always carry `resultType: "complete"` for peers on
+  protocol 2026-07-28 (mcp-py 2.3 validates against that surface even when
+  the upstream hop negotiated an older version); rmcp strips the field again
+  for legacy peers, so older clients see the unchanged shape.
 - Windows: `CerberusPaths::resolve` now honors `CERBERUS_CONFIG_DIR` /
   `CERBERUS_DATA_DIR` before consulting `ProjectDirs`, so sandboxed runs work
   even when no OS profile folder can be resolved.

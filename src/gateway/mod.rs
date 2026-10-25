@@ -614,8 +614,16 @@ impl ServerHandler for GatewayHandler {
                     extra,
                 ))
             }
-            Ok(Ok(result)) => {
+            Ok(Ok(mut result)) => {
                 tracing::info!(%correlation, %server, %tool, elapsed_ms = elapsed.as_millis() as u64, "ok");
+                // The upstream session may be on a legacy protocol version,
+                // where rmcp strips `resultType` from results. Clients on
+                // 2026-07-28 (e.g. mcp-py 2.3's default "auto" mode) require
+                // the field, and rmcp re-strips it for legacy peers after this
+                // handler returns, so assert it unconditionally here.
+                if result.result_type.is_none() {
+                    result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+                }
                 Ok(result.into())
             }
         }
@@ -861,19 +869,40 @@ pub async fn run_foreground(
 
     {
         let upstreams = state.upstreams.lock().await;
-        ctx.out(&bold("CerberusMCP Gateway"));
-        ctx.status("Transport", transport);
+        // `stdio` reserves stdout for MCP JSON-RPC: the banner goes to stderr
+        // there, so strict clients (e.g. the Python SDK) never see prose.
+        let stdio_mode = transport == "stdio";
+        let line = |text: &str| {
+            if ctx.json || ctx.quiet {
+                return;
+            }
+            if stdio_mode {
+                eprintln!("{text}");
+            } else {
+                println!("{text}");
+            }
+        };
+        let status = |label: &str, value: &str| {
+            if ctx.json || ctx.quiet {
+                return;
+            }
+            let width: usize = 22;
+            let dots = width.saturating_sub(label.chars().count());
+            line(&format!("  {label} {} {}", ".".repeat(dots), value));
+        };
+        line(&bold("CerberusMCP Gateway"));
+        status("Transport", transport);
         if transport == "http" {
-            ctx.status("Bind", bind);
+            status("Bind", bind);
         }
-        ctx.out("");
+        line("");
         for u in upstreams.values() {
             let mark = if u.service.is_some() {
                 green("connected")
             } else {
                 red("failed")
             };
-            ctx.out(&format!(
+            line(&format!(
                 "  {} {} {} tools{}",
                 mark,
                 bold(&u.server),
@@ -884,9 +913,9 @@ pub async fn run_foreground(
                     .unwrap_or_default()
             ));
         }
-        ctx.out("");
-        ctx.out(&dim(SEPARATOR_NOTE));
-        ctx.out(&dim("press ctrl-c to stop"));
+        line("");
+        line(&dim(SEPARATOR_NOTE));
+        line(&dim("press ctrl-c to stop"));
     }
 
     match transport {
