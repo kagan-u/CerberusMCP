@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stdout: prose on the MCP channel broke strict clients (the official Python
   SDK rejects non-JSON-RPC lines). For stdio the banner and status lines go
   to stderr; stdout stays JSON-RPC-only.
+- The upstream HTTP client (used by `gateway start` with an `http(s)`
+  upstream entry) sent `Authorization: Bearer Bearer <token>` — the token
+  was double-prefixed because rmcp's `auth_header` field takes the raw
+  token and adds the scheme itself. It now passes the raw value.
 - `tools/call` results always carry `resultType: "complete"` for peers on
   protocol 2026-07-28 (mcp-py 2.3 validates against that surface even when
   the upstream hop negotiated an older version); rmcp strips the field again

@@ -290,7 +290,8 @@ impl GatewayState {
                 }
                 if let Some(token) = bearer_token {
                     let value = secrets.resolve_env_value(token)?;
-                    config.auth_header = Some(format!("Bearer {value}"));
+                    // rmcp adds the `Bearer ` prefix itself; the field takes the raw token.
+                    config.auth_header = Some(value);
                 }
                 let transport = StreamableHttpClientTransport::from_config(config);
                 let service =
