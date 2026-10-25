@@ -40,11 +40,16 @@ Dry-run (the default for `sync`) stops after step 1 and prints the plan.
 
 ## Registry store
 
-`RegistryStore` keeps the parsed registry plus a content hash of the file it
-was loaded from. Saves re-hash and fail with a "concurrent modification"
-error if the file changed underneath us, then write atomically. Migrations
-(`registry/migrate.rs`) upgrade legacy layouts (e.g. string-form servers) to
-schema v1 on load; a backup is taken when a migration rewrites the file.
+`RegistryStore` keeps the parsed registry (`conf.cerberus`, schema v2 TOML)
+plus a content hash of the file it was loaded from. Saves re-hash and fail
+with a "concurrent modification" error if the file changed underneath us,
+then write atomically. Migrations (`registry/migrate.rs`) upgrade legacy
+`cerberus.yaml` documents (schema v0/v1) to `conf.cerberus` at schema v2 on
+first access, with a backup under `<data>/backups/migrations/`. Verified
+loads also compile an rkyv snapshot into `<data>/cache/` so subsequent loads
+validate the container instead of re-parsing TOML (`registry/archive.rs`,
+disabled by `CERBERUS_NO_CACHE`). The gateway's `--watch` polls the same
+source file (stat + content hash) and reconciles valid edits live.
 
 ## Environment policy
 

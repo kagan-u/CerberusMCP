@@ -166,6 +166,7 @@ cerberus gateway start                            # stdio (for clients that spaw
 cerberus gateway start --transport http           # streamable HTTP on 127.0.0.1:8713
 cerberus gateway start --transport http \
   --bind 0.0.0.0:8713 --allow-remote --token …    # remote requires a token
+cerberus gateway start --watch                    # live-reload conf.cerberus edits
 cerberus gateway status                           # is it running? which tools are routed?
 cerberus gateway doctor                           # diagnose upstreams and configuration
 cerberus gateway validate                         # check config without starting
@@ -177,7 +178,9 @@ The gateway connects to upstreams on demand, aggregates their tools under
 (`allow_tools` / `deny_tools` with trailing-`*` wildcards,
 `require_confirmation`). Calls are limited by a concurrency semaphore and a
 per-call timeout. It binds loopback only unless `--allow-remote` is combined
-with an auth token.
+with an auth token. `--watch` polls the registry file and applies valid
+edits live: only `transport`/`pre_launch` changes reconnect an upstream
+(re-running its pre-launch hooks); everything else swaps in place.
 
 Failures come back as tool-level errors carrying a stable `code` in
 `structuredContent` (`policy_denied`, `upstream_unavailable`, `timeout`, …)
