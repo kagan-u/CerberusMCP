@@ -13,7 +13,9 @@
 //! Only the `tools` capability is advertised: resources and prompts are not
 //! forwarded (documented limitation in docs/protocol-compatibility.md).
 
-use std::collections::HashMap;
+mod hooks;
+
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,7 +38,7 @@ use crate::paths::CerberusPaths;
 use crate::policy::{self, ServerPolicyView};
 use crate::process::{EnvPolicy, build_command, executable_exists};
 use crate::registry::RegistryStore;
-use crate::registry::schema::{ExecutionMode, ServerDef, Transport};
+use crate::registry::schema::{CommandDef, ExecutionMode, ServerDef, Transport};
 use crate::routing::{RoutingTable, public_tool_name, split_public_name};
 use crate::secrets::{SecretStore, collect_literal_secrets, redact_secrets};
 
@@ -227,6 +229,8 @@ pub struct GatewayState {
     pub startup_timeout: Duration,
     pub semaphore: Arc<Semaphore>,
     pub redact: Vec<String>,
+    /// Top-level `[commands.*]`, resolved for `pre_launch` `use` steps.
+    pub commands: BTreeMap<String, CommandDef>,
 }
 
 impl GatewayState {
@@ -234,9 +238,15 @@ impl GatewayState {
         server: &str,
         def: &ServerDef,
         secrets: &SecretStore,
+        commands: &BTreeMap<String, CommandDef>,
     ) -> Result<UpstreamService> {
         match &def.transport {
             Transport::Stdio { .. } => {
+                // Single choke point for pre-launch hooks: they run here,
+                // before the executable check (a hook may provision it) and
+                // before the spawn. Direct-mode adapters, doctor probes, and
+                // HTTP transports never reach this line.
+                hooks::run_pre_launch(server, def, commands, secrets).await?;
                 if !executable_exists(match &def.transport {
                     Transport::Stdio { command, .. } => command.as_str(),
                     _ => unreachable!(),
@@ -348,7 +358,14 @@ impl GatewayHandler {
             .ok_or_else(|| CerberusError::ServerNotFound {
                 name: server.to_string(),
             })?;
-        match GatewayState::connect_upstream(server, &def, &self.state.secrets).await {
+        match GatewayState::connect_upstream(
+            server,
+            &def,
+            &self.state.secrets,
+            &self.state.commands,
+        )
+        .await
+        {
             Ok(service) => {
                 let upstream = upstreams.get_mut(server).expect("checked above");
                 // Re-discover tools.
@@ -671,6 +688,7 @@ pub async fn build_state(
         startup_timeout: Duration::from_millis(DEFAULT_STARTUP_TIMEOUT_MS),
         semaphore: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENCY)),
         redact,
+        commands: store.registry.commands.clone(),
     });
 
     // Register policies and empty upstream slots first so failures are
@@ -709,7 +727,8 @@ pub async fn build_state(
                 upstreams.get(&name).map(|u| u.def.clone())
             };
             let Some(def) = def else { return };
-            match GatewayState::connect_upstream(&name, &def, &state.secrets).await {
+            match GatewayState::connect_upstream(&name, &def, &state.secrets, &state.commands).await
+            {
                 Ok(service) => {
                     let tools = match service.list_all_tools().await {
                         Ok(tools) => tools

@@ -12,7 +12,8 @@ src/
 ├── secrets/      env / secret_ref / literal resolution + redaction
 ├── process/      sanitized environment construction, launch, probes
 ├── routing/      {server}__{tool} public names, collision detection
-├── gateway/      MCP server (rmcp) that fronts upstreams with policy
+├── gateway/      MCP server (rmcp) that fronts upstreams with policy,
+│                 pre-launch hooks (hooks.rs)
 ├── backup/       content-addressed backups + restore
 ├── diagnostics/  doctor / health / logs aggregation
 └── paths.rs      OS-appropriate dirs, env overrides

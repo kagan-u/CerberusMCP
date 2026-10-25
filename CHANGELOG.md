@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepts either format (detected by content), and `cerberus init` refuses to
   overwrite a legacy `cerberus.yaml` without `--force`.
 
+- Gateway **pre-launch hooks**: stdio servers' `pre_launch` steps run in
+  `connect_upstream` — the single choke point before a spawn, on both the
+  eager startup connect and every reconnect. Steps resolve `use` references
+  against `[commands.*]` (step fields override command defaults), inherit
+  the sanitized server launch environment with their bindings on top, are
+  killed at `timeout_ms` (step → command → 30 s default), and a failure
+  aborts that upstream's connect as a normal `upstream_unavailable` error
+  quoting the child's stderr (`continue_on_error` downgrades to a warning).
+  Doctor probes and client adapters never execute hooks — `cerberus doctor`
+  reports an Info diagnostic for hooked servers.
 - Compiled registry cache: a load parses `conf.cerberus` once and compiles
   an rkyv snapshot under `<data>/cache/registry-*.cbin`; later loads verify
   the container header, the source stat, and FNV-1a hashes of both source

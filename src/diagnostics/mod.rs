@@ -162,6 +162,20 @@ pub async fn doctor(
                         }
                     }
 
+                    // Pre-launch hooks are a gateway-only connect step;
+                    // doctor probes spawn the server directly and never
+                    // execute them.
+                    if !def.pre_launch.is_empty() {
+                        diagnostics.push(Diagnostic {
+                            severity: Severity::Info,
+                            area: "server".into(),
+                            message: format!(
+                                "server `{name}`: {} pre-launch hook step(s); executed by the gateway only, not by probes or client adapters",
+                                def.pre_launch.len()
+                            ),
+                        });
+                    }
+
                     if opts.probe_servers && def.enabled {
                         if let crate::registry::schema::Transport::Stdio { .. } = &def.transport {
                             match process::probe_stdio_liveness(
@@ -443,5 +457,64 @@ mod tests {
         assert_eq!(report.clients.len(), 6);
         let aider = report.clients.iter().find(|c| c.client == "aider").unwrap();
         assert_eq!(aider.status, "unsupported integration");
+    }
+
+    #[tokio::test]
+    async fn doctor_flags_pre_launch_as_gateway_only() {
+        use crate::registry::schema::{HookStep, ServerDef, Transport};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = CerberusPaths::with_roots(dir.path().join("c"), dir.path().join("d"));
+        paths.ensure_dirs().unwrap();
+        let mut store = RegistryStore {
+            path: paths.registry_file.clone(),
+            registry: Default::default(),
+            content_hash: 0,
+        };
+        store.registry.servers.insert(
+            "hooked".into(),
+            ServerDef {
+                enabled: true,
+                transport: Transport::Stdio {
+                    command: "cat".into(),
+                    args: vec![],
+                    env: Default::default(),
+                    cwd: None,
+                },
+                mode: None,
+                tags: vec![],
+                timeout_ms: None,
+                startup_timeout_ms: None,
+                policy: Default::default(),
+                description: None,
+                source: None,
+                pre_launch: vec![HookStep {
+                    use_command: None,
+                    run: Some(vec!["sh".into(), "-c".into(), "true".into()]),
+                    cwd: None,
+                    env: Default::default(),
+                    timeout_ms: None,
+                    continue_on_error: false,
+                }],
+            },
+        );
+        store.save().unwrap();
+
+        let report = doctor(
+            &paths,
+            &DoctorOptions {
+                client: None,
+                probe_servers: false,
+            },
+            &SecretStore::default(),
+        )
+        .await
+        .unwrap();
+        let note = report
+            .diagnostics
+            .iter()
+            .find(|d| d.message.contains("pre-launch"))
+            .expect("pre-launch diagnostic present");
+        assert_eq!(note.severity, Severity::Info, "{}", note.message);
+        assert!(note.message.contains("gateway only"), "{}", note.message);
     }
 }

@@ -53,10 +53,34 @@ colliding with other `_meta` producers (trace context, host tooling).
 
 ## Lifecycle
 
-Upstreams connect lazily on first use and reconnect on failure. Each
-connection is a long-lived `RunningService` held in gateway state; discovery
-refreshes the routing table. Shutdown cancels every upstream and removes the
-HTTP state file.
+Upstreams connect eagerly during startup (bounded parallelism) and lazily
+again on first use after a failure. Each connection is a long-lived
+`RunningService` held in gateway state; discovery refreshes the routing
+table. Shutdown cancels every upstream and removes the HTTP state file.
+
+## Pre-launch hooks
+
+A stdio server may declare `pre_launch` steps (documented in
+[`docs/registry.md`](registry.md)). The gateway executes them — and only the
+gateway:
+
+- **When:** immediately before the upstream's process is spawned, in
+  registration order — both during startup's eager connect and on every
+  reconnect. Steps must be idempotent.
+- **Environment:** the same sanitized launch environment the server process
+  would get (safe baseline + the server's resolved bindings), with the
+  `[commands.*]` bindings and then the step's own bindings on top. `cwd`
+  falls back from step to command; `~` expands to home.
+- **Timeouts:** `timeout_ms` from the step, else the command, else 30 s. On
+  expiry the child is killed and the step fails.
+- **Failures:** a failed step aborts that server's connect and surfaces as
+  the usual `upstream_unavailable` error with the step location and the
+  child's stderr quoted (`pre-launch servers.<name>.pre_launch[i]: …`). A
+  step with `continue_on_error = true` logs a warning instead and the
+  remaining steps run.
+- **Never run elsewhere:** doctor probes, client adapters, and direct-mode
+  launches ignore `pre_launch`; `cerberus doctor` reports an Info line for
+  hooked servers saying exactly that.
 
 ## Policy enforcement
 
