@@ -844,9 +844,11 @@ pub async fn run_foreground(
     token: Option<&str>,
     profile: Option<&str>,
 ) -> Result<i32> {
-    // Network exposure guard.
-    let is_loopback =
-        bind.starts_with("127.0.0.1") || bind.starts_with("localhost") || bind.starts_with("[::1]");
+    // Network exposure guard. Fail closed: only exact loopback IPs (the whole
+    // 127.0.0.0/8 block, ::1) and `localhost` count; every other host —
+    // including lookalikes like `127.0.0.1.nip.io` — requires --allow-remote.
+    let token = token.filter(|t| !t.is_empty());
+    let is_loopback = bind_is_loopback(bind);
     if !is_loopback {
         if !allow_remote {
             return Err(CerberusError::Gateway(format!(
@@ -920,7 +922,7 @@ pub async fn run_foreground(
 
     match transport {
         "stdio" => run_stdio(state).await,
-        "http" => run_http(state, bind, token).await,
+        "http" => run_http(state, bind, token, allow_remote).await,
         other => Err(CerberusError::Validation(format!(
             "unknown gateway transport `{other}` (expected stdio or http)"
         ))),
@@ -974,7 +976,12 @@ async fn run_stdio(state: Arc<GatewayState>) -> Result<i32> {
 
 const EXIT_OK: i32 = 0;
 
-async fn run_http(state: Arc<GatewayState>, bind: &str, token: Option<&str>) -> Result<i32> {
+async fn run_http(
+    state: Arc<GatewayState>,
+    bind: &str,
+    token: Option<&str>,
+    allow_remote: bool,
+) -> Result<i32> {
     let paths = state.paths.clone();
     let state_factory_state = state.clone();
     let service = StreamableHttpService::new(
@@ -982,20 +989,30 @@ async fn run_http(state: Arc<GatewayState>, bind: &str, token: Option<&str>) -> 
         std::sync::Arc::new(
             rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default(),
         ),
-        StreamableHttpServerConfig::default(),
+        http_server_config(allow_remote),
     );
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .map_err(|e| CerberusError::Gateway(format!("bind {bind}: {e}")))?;
+    // Report the address we actually bound (meaningful with `--bind ...:0`).
+    let resolved = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| bind.to_string());
+    tracing::info!(endpoint = %resolved, "gateway http listening");
 
     let auth_token = token.map(str::to_string);
-    let mut app = axum::Router::new();
+    // The MCP service is the router's fallback, so it must be installed
+    // BEFORE the auth layer: axum's `layer` only wraps routes added at that
+    // point, and a fallback attached later would bypass the token check.
+    let mut app = axum::Router::new().fallback_service(service);
     if let Some(required) = auth_token.clone() {
         app = app.layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let required = required.clone();
                 async move {
+                    use axum::response::IntoResponse;
                     let ok = req
                         .headers()
                         .get(axum::http::header::AUTHORIZATION)
@@ -1004,17 +1021,23 @@ async fn run_http(state: Arc<GatewayState>, bind: &str, token: Option<&str>) -> 
                         .map(|v| constant_time_eq(v.as_bytes(), required.as_bytes()))
                         .unwrap_or(false);
                     if ok {
-                        Ok(next.run(req).await)
+                        next.run(req).await
                     } else {
-                        Err(axum::http::StatusCode::UNAUTHORIZED)
+                        (
+                            axum::http::StatusCode::UNAUTHORIZED,
+                            [(
+                                axum::http::header::WWW_AUTHENTICATE,
+                                axum::http::HeaderValue::from_static("Bearer"),
+                            )],
+                        )
+                            .into_response()
                     }
                 }
             },
         ));
     }
-    app = app.fallback_service(service);
 
-    let snapshot = status_snapshot(&state, "http", Some(bind)).await;
+    let snapshot = status_snapshot(&state, "http", Some(&resolved)).await;
     write_state_file(&paths, &snapshot)?;
 
     let shutdown_state = state.clone();
@@ -1033,6 +1056,36 @@ async fn run_http(state: Arc<GatewayState>, bind: &str, token: Option<&str>) -> 
         .await
         .map_err(|e| CerberusError::Gateway(format!("http serve: {e}")))?;
     Ok(EXIT_OK)
+}
+
+/// Host-header allowlist for the streamable-HTTP server. Loopback daemons
+/// keep rmcp's DNS-rebinding protection (localhost/127.0.0.1/::1 only);
+/// `--allow-remote` disables it because remote clients legitimately send
+/// their public Host header — the bearer token is the access control there.
+fn http_server_config(allow_remote: bool) -> StreamableHttpServerConfig {
+    if allow_remote {
+        StreamableHttpServerConfig::default().disable_allowed_hosts()
+    } else {
+        StreamableHttpServerConfig::default()
+    }
+}
+
+/// True only for bind strings that address loopback unambiguously:
+/// a literal IP in 127.0.0.0/8 or ::1, or the exact name `localhost`.
+/// Hostnames (including `127.0.0.1.nip.io`) are never loopback here.
+fn bind_is_loopback(bind: &str) -> bool {
+    let host = if let Some(rest) = bind.strip_prefix('[') {
+        // [::1]:8713
+        rest.split(']').next().unwrap_or("")
+    } else {
+        bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -1082,6 +1135,32 @@ mod tests {
     use super::*;
     use crate::error::ExitCode;
     use rmcp::model::CallToolResponse;
+
+    #[test]
+    fn bind_is_loopback_is_fail_closed() {
+        assert!(bind_is_loopback("127.0.0.1:8713"));
+        assert!(bind_is_loopback("127.0.0.9:1"));
+        assert!(bind_is_loopback("localhost:8713"));
+        assert!(bind_is_loopback("LOCALHOST:8713"));
+        assert!(bind_is_loopback("[::1]:8713"));
+        // Hostnames and lookalikes are never treated as loopback.
+        assert!(!bind_is_loopback("127.0.0.1.nip.io:8713"));
+        assert!(!bind_is_loopback("localhost.attacker.example:8713"));
+        assert!(!bind_is_loopback("0.0.0.0:8713"));
+        assert!(!bind_is_loopback("192.168.1.10:8713"));
+        assert!(!bind_is_loopback("[::]:8713"));
+        assert!(!bind_is_loopback("example.com"));
+    }
+
+    #[test]
+    fn http_host_allowlist_tracks_allow_remote() {
+        // Loopback keeps rmcp's DNS-rebinding allowlist.
+        let loopback = http_server_config(false);
+        assert!(!loopback.allowed_hosts.is_empty());
+        // --allow-remote accepts any Host; the bearer token is the gate.
+        let remote = http_server_config(true);
+        assert!(remote.allowed_hosts.is_empty());
+    }
 
     #[test]
     fn constant_time_eq_works() {

@@ -125,6 +125,28 @@ Notes for SDK authors:
 - Startup timeout applies while connecting.
 - Loopback-only binding by default; `--allow-remote` requires a token, which
   callers must send as a bearer token.
+
+## Securing a remote gateway
+
+The HTTP transport is plaintext by design; treat the network path as
+untrusted and terminate TLS in front of the gateway (nginx, Caddy, a service
+mesh, or an SSH tunnel). The security model:
+
+- **Bind guard.** `--bind` defaults to `127.0.0.1:8713`. Only literal IPs in
+  `127.0.0.0/8`, `::1`, and the exact name `localhost` count as loopback;
+  anything else — including hostname lookalikes like `127.0.0.1.nip.io` —
+  requires `--allow-remote` and fails otherwise.
+- **Bearer token.** Non-loopback binds also require a token: `--token` or the
+  `CERBERUS_GATEWAY_TOKEN` environment variable (prefer the env var — CLI
+  arguments are visible in process listings). An empty token counts as no
+  token. Comparison is constant-time, and401 responses carry
+  `WWW-Authenticate: Bearer`.
+- **Host-header allowlist.** For loopback binds, rmcp's default DNS-rebinding
+  protection stays active (only `localhost`/`127.0.0.1`/`::1` Host headers
+  are accepted). `--allow-remote` disables it — remote clients send their
+  public Host header, and the token is the access control.
+- **State file.** The HTTP state file records pid, transport, and the bound
+  address; it never contains the token.
 - Upstream errors are redacted with the same secret list the CLI uses before
   they reach logs or responses.
 

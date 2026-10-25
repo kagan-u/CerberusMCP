@@ -37,9 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Upgrade `rmcp` 3.5.1 → 3.7.0 (protocol 2026-07-28 model, `resultType` and
   cache-hint machinery).
+- Loopback detection for `gateway start --bind` is now fail-closed: only
+  literal IPs in 127.0.0.0/8 or ::1, and the exact name `localhost`, count
+  as loopback. Hostnames (including lookalikes such as `127.0.0.1.nip.io`)
+  require `--allow-remote` + a token.
+- With `--allow-remote`, the streamable-HTTP Host-header allowlist is
+  disabled (remote clients legitimately send their public Host); the bearer
+  token is the access control. Loopback binds keep rmcp's DNS-rebinding
+  allowlist.
+- The HTTP state file now records the actually bound address, so
+  `--bind 127.0.0.1:0` reports the real port.
 
 ### Fixed
 
+- HTTP gateway bearer auth was never enforced: the auth middleware was
+  applied before the MCP fallback service was attached, and axum's `layer`
+  only wraps routes added at that point — every request reached the gateway
+  unauthenticated. The fallback is now installed first so the token check
+  covers all traffic. 401 responses carry `WWW-Authenticate: Bearer`, and an
+  empty `--token`/`CERBERUS_GATEWAY_TOKEN` is treated as absent (it no
+  longer satisfies the non-loopback token requirement).
 - `gateway start --transport stdio` no longer prints the startup banner on
   stdout: prose on the MCP channel broke strict clients (the official Python
   SDK rejects non-JSON-RPC lines). For stdio the banner and status lines go
