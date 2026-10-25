@@ -187,6 +187,8 @@ fn spawn_watch(sb: &Sandbox) -> WatchedGateway {
             "--bind",
             &bind,
             "--watch",
+            "--watch-interval",
+            "200",
         ])
         .env("CERBERUS_CONFIG_DIR", sb.config())
         .env("CERBERUS_DATA_DIR", sb.data())
@@ -243,6 +245,13 @@ fn watch_applies_valid_edits_rejects_broken_ones_and_ignores_touches() {
     fs::write(&registry, registry_v1()).expect("write registry");
 
     let gw = spawn_watch(&sb);
+
+    // The state file records that watch mode is active.
+    let state: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(sb.data().join("state").join("gateway.json")).expect("read state"),
+    )
+    .expect("parse state");
+    assert_eq!(state.get("watch"), Some(&serde_json::json!(true)));
 
     // 1. mtime-only touch: same bytes, new stat — must not reload.
     let v1 = fs::read_to_string(&registry).expect("read registry");

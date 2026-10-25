@@ -63,7 +63,8 @@ file.
 ## Hot reload (`--watch`)
 
 `gateway start --watch` (default: off) polls the registry file's stat
-(mtime + size) every 500 ms and reconciles changes while serving:
+(mtime + size) every 500 ms — tunable with `--watch-interval <MS>` — and
+reconciles changes while serving:
 
 - **Touch-safe:** identical content (an mtime-only touch) changes nothing.
 - **Valid documents only:** a file that fails to parse or validate is
@@ -192,13 +193,15 @@ mesh, or an SSH tunnel). The security model:
   protection stays active (only `localhost`/`127.0.0.1`/`::1` Host headers
   are accepted). `--allow-remote` disables it — remote clients send their
   public Host header, and the token is the access control.
-- **State file.** The HTTP state file records pid, transport, and the bound
-  address; it never contains the token.
+- **State file.** The HTTP state file records pid, transport, the bound
+  address, and whether `--watch` is active; it never contains the token.
 - Upstream errors are redacted with the same secret list the CLI uses before
   they reach logs or responses.
 
 ## State file
 
-In HTTP mode the gateway writes a small state snapshot (transport, port, tool
-count) under the data directory for `gateway status` to read; it is removed
-on clean shutdown.
+The gateway writes a small state snapshot (pid, transport, tool count, and
+whether `--watch` is active) under the data directory for `gateway status`
+to read; it is removed on clean shutdown. `gateway status` probes the
+recorded pid for real liveness, so a stale file reports `stopped` rather
+than `unknown`, and `--json` includes the computed `running` field.

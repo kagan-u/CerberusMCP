@@ -1257,3 +1257,75 @@ fn no_cache_env_disables_cache_writes() {
         .success();
     assert_eq!(find_cbin(&sb.path("data")).len(), 1);
 }
+
+#[test]
+fn gateway_status_reports_real_process_liveness() {
+    let sb = Sandbox::new();
+    sb.init();
+    let state_file = sb.path("data/state/gateway.json");
+    fs::create_dir_all(state_file.parent().expect("state dir parent")).ok();
+
+    let write_state = |pid: u64| {
+        fs::write(
+            &state_file,
+            serde_json::json!({
+                "pid": pid,
+                "transport": "stdio",
+                "started_unix": 0,
+                "watch": false,
+            })
+            .to_string(),
+        )
+        .expect("write state");
+    };
+
+    // Our own process is definitely alive.
+    write_state(std::process::id() as u64);
+    let out = sb
+        .cmd()
+        .args(["gateway", "status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&out).expect("status json");
+    assert_eq!(parsed.get("running"), Some(&Value::Bool(true)));
+    sb.cmd()
+        .args(["gateway", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("running"));
+
+    // A pid that has already exited must read as stopped, not unknown.
+    let mut child = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .spawn()
+            .expect("spawn dead child")
+    } else {
+        std::process::Command::new("sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn dead child")
+    };
+    let dead_pid = child.id() as u64;
+    child.wait().expect("wait dead child");
+    write_state(dead_pid);
+
+    let out = sb
+        .cmd()
+        .args(["gateway", "status", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&out).expect("status json");
+    assert_eq!(parsed.get("running"), Some(&Value::Bool(false)));
+    sb.cmd()
+        .args(["gateway", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("stopped"));
+}

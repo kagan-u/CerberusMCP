@@ -66,6 +66,17 @@ http = "1"
 # Default features use rustls, not OpenSSL.
 reqwest = { version = "0.13", features = ["json"] }
 
+# OS process probes for `gateway status` liveness and `gateway stop`.
+# windows-sys is already in the tree transitively (no new build cost).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

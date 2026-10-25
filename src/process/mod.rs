@@ -131,6 +131,73 @@ pub fn executable_exists(command: &str) -> bool {
     })
 }
 
+/// True if a process with this pid currently exists. Pid 0 (and negative
+/// values, which cannot occur) are never alive — probing pid 0 would hit
+/// our own process group.
+pub fn process_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    unsafe {
+        if libc::kill(pid, 0) == 0 {
+            return true;
+        }
+        // EPERM: the process exists but belongs to someone else.
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if !handle.is_null() {
+            CloseHandle(handle);
+            return true;
+        }
+        GetLastError() == ERROR_ACCESS_DENIED
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Ask a process to stop: SIGTERM on unix, forceful termination on Windows
+/// (which has no SIGTERM equivalent). False when the pid is already gone
+/// or could not be signalled.
+pub fn terminate(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid, libc::SIGTERM) == 0
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid as u32);
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let ok = TerminateProcess(handle, 1) != 0;
+        CloseHandle(handle);
+        ok
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 /// Run a stdio server command with a hard timeout and capture whether it
 /// stays alive briefly. Used by health checks.
 pub async fn probe_stdio_liveness(
@@ -169,6 +236,49 @@ mod tests {
     use super::*;
     use crate::registry::schema::ServerPolicy;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn process_alive_probes_live_and_dead_pids() {
+        assert!(process_alive(std::process::id() as i32));
+        assert!(!process_alive(0));
+        assert!(!process_alive(-1));
+
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("cmd")
+                .args(["/C", "exit 0"])
+                .spawn()
+                .expect("spawn probe child")
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", "exit 0"])
+                .spawn()
+                .expect("spawn probe child")
+        };
+        let pid = child.id() as i32;
+        assert!(process_alive(pid), "child must be alive while running");
+        child.wait().expect("wait probe child");
+        assert!(!process_alive(pid), "child must be gone after wait");
+    }
+
+    #[test]
+    fn terminate_stops_a_running_process() {
+        let mut child = if cfg!(windows) {
+            std::process::Command::new("ping")
+                .args(["-n", "6", "127.0.0.1"])
+                .spawn()
+                .expect("spawn probe child")
+        } else {
+            std::process::Command::new("sh")
+                .args(["-c", "sleep 5"])
+                .spawn()
+                .expect("spawn probe child")
+        };
+        let pid = child.id() as i32;
+        assert!(terminate(pid), "terminate must signal the child");
+        let status = child.wait().expect("wait probe child");
+        assert!(!status.success(), "child must not exit cleanly");
+        assert!(!process_alive(pid), "child must be gone after terminate");
+    }
 
     fn stdio(cmd: &str, args: &[&str]) -> ServerDef {
         ServerDef {

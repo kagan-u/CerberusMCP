@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gateway start --watch-interval <MS>` tunes the hot-reload poll
+  interval (default: 500 ms).
+
+### Changed
+
+- `gateway status` performs a real liveness probe of the recorded pid:
+  a stale state file reports `stopped` (was `unknown`) and `--json`
+  includes a computed `running` field. The state file now records
+  whether `--watch` is active.
+- `gateway stop` works on Windows: it signals the recorded pid directly
+  (SIGTERM via libc on unix, termination via windows-sys on Windows)
+  instead of shelling out to `kill`.
+
 ## [0.3.1] - 2026-10-25
 
 ### Fixed

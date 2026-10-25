@@ -178,9 +178,10 @@ The gateway connects to upstreams on demand, aggregates their tools under
 (`allow_tools` / `deny_tools` with trailing-`*` wildcards,
 `require_confirmation`). Calls are limited by a concurrency semaphore and a
 per-call timeout. It binds loopback only unless `--allow-remote` is combined
-with an auth token. `--watch` polls the registry file and applies valid
-edits live: only `transport`/`pre_launch` changes reconnect an upstream
-(re-running its pre-launch hooks); everything else swaps in place.
+with an auth token. `--watch` polls the registry file (every 500 ms by
+default, tune with `--watch-interval <MS>`) and applies valid edits live:
+only `transport`/`pre_launch` changes reconnect an upstream (re-running its
+pre-launch hooks); everything else swaps in place.
 
 Failures come back as tool-level errors carrying a stable `code` in
 `structuredContent` (`policy_denied`, `upstream_unavailable`, `timeout`, …)

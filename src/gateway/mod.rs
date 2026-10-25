@@ -815,6 +815,7 @@ pub struct GatewayStatusSnapshot {
     pub pid: u32,
     pub upstreams: Vec<UpstreamStatus>,
     pub tools: usize,
+    pub watch: bool,
 }
 
 #[derive(Serialize)]
@@ -831,6 +832,7 @@ pub async fn status_snapshot(
     state: &GatewayState,
     transport: &str,
     bind: Option<&str>,
+    watch: bool,
 ) -> GatewayStatusSnapshot {
     let upstreams = state.upstreams.lock().await;
     let routing = state.routing.read().await;
@@ -852,6 +854,7 @@ pub async fn status_snapshot(
             })
             .collect(),
         tools: routing.len(),
+        watch,
     }
 }
 
@@ -864,6 +867,7 @@ fn write_state_file(paths: &CerberusPaths, snapshot: &GatewayStatusSnapshot) -> 
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
+        "watch": snapshot.watch,
     });
     crate::registry::atomic_write(
         &paths.gateway_state_file(),
@@ -884,6 +888,7 @@ pub async fn run_foreground(
     token: Option<&str>,
     profile: Option<&str>,
     watch: bool,
+    watch_interval: Option<u64>,
 ) -> Result<i32> {
     // Network exposure guard. Fail closed: only exact loopback IPs (the whole
     // 127.0.0.0/8 block, ::1) and `localhost` count; every other host —
@@ -912,6 +917,9 @@ pub async fn run_foreground(
 
     // Opt-in registry hot reload: polls the source file and reconciles
     // per-server changes; cancelled together with either serve path.
+    let interval = watch_interval
+        .map(Duration::from_millis)
+        .unwrap_or(watch::WATCH_INTERVAL);
     let watch_ct = tokio_util::sync::CancellationToken::new();
     if watch {
         watch::spawn(
@@ -919,6 +927,7 @@ pub async fn run_foreground(
             profile.map(str::to_string),
             store.content_hash,
             watch_ct.clone(),
+            interval,
         );
     }
 
@@ -953,10 +962,7 @@ pub async fn run_foreground(
         if watch {
             status(
                 "Registry watch",
-                &format!(
-                    "conf.cerberus (every {} ms)",
-                    watch::WATCH_INTERVAL.as_millis()
-                ),
+                &format!("conf.cerberus (every {} ms)", interval.as_millis()),
             );
         }
         line("");
@@ -983,8 +989,8 @@ pub async fn run_foreground(
     }
 
     match transport {
-        "stdio" => run_stdio(state, watch_ct).await,
-        "http" => run_http(state, bind, token, allow_remote, watch_ct).await,
+        "stdio" => run_stdio(state, watch_ct, watch).await,
+        "http" => run_http(state, bind, token, allow_remote, watch_ct, watch).await,
         other => Err(CerberusError::Validation(format!(
             "unknown gateway transport `{other}` (expected stdio or http)"
         ))),
@@ -994,6 +1000,7 @@ pub async fn run_foreground(
 async fn run_stdio(
     state: Arc<GatewayState>,
     watch_ct: tokio_util::sync::CancellationToken,
+    watch: bool,
 ) -> Result<i32> {
     let paths = state.paths.clone();
     let handler = GatewayHandler::new(state.clone());
@@ -1005,7 +1012,7 @@ async fn run_stdio(
         .await
         .map_err(|e| CerberusError::Gateway(format!("stdio serve failed: {e}")))?;
 
-    let snapshot = status_snapshot(&state, "stdio", None).await;
+    let snapshot = status_snapshot(&state, "stdio", None, watch).await;
     write_state_file(&paths, &snapshot)?;
     tracing::info!(tools = snapshot.tools, "gateway running (stdio)");
 
@@ -1050,6 +1057,7 @@ async fn run_http(
     token: Option<&str>,
     allow_remote: bool,
     watch_ct: tokio_util::sync::CancellationToken,
+    watch: bool,
 ) -> Result<i32> {
     let paths = state.paths.clone();
     let state_factory_state = state.clone();
@@ -1106,7 +1114,7 @@ async fn run_http(
         ));
     }
 
-    let snapshot = status_snapshot(&state, "http", Some(&resolved)).await;
+    let snapshot = status_snapshot(&state, "http", Some(&resolved), watch).await;
     write_state_file(&paths, &snapshot)?;
 
     let shutdown_state = state.clone();

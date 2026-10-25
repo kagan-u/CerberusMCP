@@ -88,6 +88,7 @@ pub(crate) fn spawn(
     profile: Option<String>,
     baseline_hash: u64,
     ct: CancellationToken,
+    interval: Duration,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let source = state.paths.registry_file.clone();
@@ -96,7 +97,7 @@ pub(crate) fn spawn(
         loop {
             tokio::select! {
                 _ = ct.cancelled() => break,
-                _ = tokio::time::sleep(WATCH_INTERVAL) => {}
+                _ = tokio::time::sleep(interval) => {}
             }
             let stat = file_stat(&source);
             if stat == seen {

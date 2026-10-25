@@ -343,6 +343,9 @@ pub enum GatewayCommand {
         /// Watch conf.cerberus and hot-reload valid changes (default: off).
         #[arg(long)]
         watch: bool,
+        /// Poll interval for --watch, in milliseconds (default: 500).
+        #[arg(long, value_name = "MS")]
+        watch_interval: Option<u64>,
     },
     /// Show gateway status.
     Status,

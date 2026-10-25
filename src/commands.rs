@@ -1583,7 +1583,13 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
             token,
             profile,
             watch,
+            watch_interval,
         } => {
+            if matches!(watch_interval, Some(0)) {
+                return Err(CerberusError::Validation(
+                    "--watch-interval must be greater than 0 ms".into(),
+                ));
+            }
             let store = load_store(ctx)?;
             validate::validate(&store.registry)?;
             crate::gateway::run_foreground(
@@ -1595,6 +1601,7 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
                 token.as_deref(),
                 profile.as_deref(),
                 watch,
+                watch_interval,
             )
             .await
         }
@@ -1613,8 +1620,10 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
             let state: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| CerberusError::Other(format!("gateway state: {e}")))?;
             let pid = state.get("pid").and_then(|p| p.as_u64());
-            let running = pid.is_some(); // full liveness check is OS-specific
+            let running = pid.is_some_and(|p| crate::process::process_alive(p as i32));
             if ctx.json {
+                let mut state = state;
+                state["running"] = serde_json::json!(running);
                 ctx.emit_json(&state);
             } else {
                 ctx.out(&format!(
@@ -1622,7 +1631,7 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
                     if running {
                         green("running")
                     } else {
-                        dim("unknown")
+                        dim("stopped")
                     }
                 ));
                 if let Some(pid) = pid {
@@ -1719,40 +1728,18 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
                 serde_json::from_str(&text).map_err(|e| CerberusError::Other(e.to_string()))?;
             let pid = state.get("pid").and_then(|p| p.as_u64()).unwrap_or(0) as i32;
             if pid > 0 {
-                #[cfg(unix)]
-                {
-                    let killed = libc_kill_like(pid, 15) == 0;
-                    if killed {
-                        ctx.out(&format!("{} sent SIGTERM to pid {pid}", green("✓")));
-                    } else {
-                        ctx.out(&yellow("process not found; cleaning stale state"));
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    ctx.out(&yellow(
-                        "stop is only implemented on unix; terminate the process manually",
-                    ));
+                if crate::process::terminate(pid) {
+                    #[cfg(unix)]
+                    ctx.out(&format!("{} sent SIGTERM to pid {pid}", green("✓")));
+                    #[cfg(windows)]
+                    ctx.out(&format!("{} terminated pid {pid}", green("✓")));
+                } else {
+                    ctx.out(&yellow("process not found; cleaning stale state"));
                 }
             }
             let _ = std::fs::remove_file(&state_file);
             Ok(ExitCode::Success as i32)
         }
-    }
-}
-
-#[cfg(unix)]
-fn libc_kill_like(pid: i32, sig: i32) -> i32 {
-    // Minimal kill(2) wrapper without a libc dependency in Cargo.toml:
-    // use `kill` from the `libc` crate if available, else shell out.
-    // We shell out only with validated numeric arguments.
-    let status = std::process::Command::new("kill")
-        .arg(format!("-{sig}"))
-        .arg(pid.to_string())
-        .status();
-    match status {
-        Ok(s) if s.success() => 0,
-        _ => -1,
     }
 }
 
