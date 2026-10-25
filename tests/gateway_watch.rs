@@ -56,11 +56,16 @@ fn shell_toml(argv: &[String]) -> String {
 }
 
 fn registry_v1() -> String {
+    registry_with_enabled(true)
+}
+
+fn registry_with_enabled(enabled: bool) -> String {
     format!(
         r#"schema_version = 2
 
 [servers.main]
 description = "first"
+enabled = {enabled}
 
 [servers.main.transport]
 {transport}
@@ -123,12 +128,35 @@ impl Drop for WatchedGateway {
 
 impl WatchedGateway {
     fn log_text(&self) -> String {
-        fs::read_to_string(&self.log).unwrap_or_default()
+        strip_ansi(&fs::read_to_string(&self.log).unwrap_or_default())
     }
 
     fn is_serving(&self) -> bool {
         TcpStream::connect(&self.bind).is_ok()
     }
+}
+
+/// tracing styles field names even when writing to a file; assertions need
+/// the plain text.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next(); // CSI: ends at the first byte in @..~
+            while let Some(&n) = chars.peek() {
+                chars.next();
+                if ('\u{40}'..='\u{7e}').contains(&n) {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn free_port() -> u16 {
@@ -244,4 +272,33 @@ fn watch_applies_valid_edits_rejects_broken_ones_and_ignores_touches() {
     fs::write(&registry, registry_v2()).expect("write v2 registry");
     wait_for_log_count(&gw, "registry reloaded", 1, Duration::from_secs(5));
     assert!(gw.is_serving(), "gateway must keep serving after reload");
+}
+
+#[test]
+fn watch_treats_enabled_toggle_as_membership_change() {
+    let sb = Sandbox {
+        root: tempfile::tempdir().expect("tempdir"),
+    };
+    fs::create_dir_all(sb.config()).expect("config dir");
+    fs::create_dir_all(sb.data()).expect("data dir");
+    let registry = sb.config().join("conf.cerberus");
+    fs::write(&registry, registry_with_enabled(true)).expect("write registry");
+
+    let gw = spawn_watch(&sb);
+
+    // Disable: the server leaves the selection (reconcile counts it removed).
+    fs::write(&registry, registry_with_enabled(false)).expect("disable server");
+    wait_for_log_count(&gw, "registry reloaded", 1, Duration::from_secs(5));
+    let log = gw.log_text();
+    assert!(
+        log.contains("removed=1"),
+        "disable must count as removed: {log}"
+    );
+
+    // Re-enable: it comes back (added, connected eagerly).
+    fs::write(&registry, registry_with_enabled(true)).expect("enable server");
+    wait_for_log_count(&gw, "registry reloaded", 2, Duration::from_secs(5));
+    let log = gw.log_text();
+    assert!(log.contains("added=1"), "enable must count as added: {log}");
+    assert!(gw.is_serving(), "gateway must keep serving across toggles");
 }

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The gateway honors `enabled = false`: disabled servers are never
+  connected and their `pre_launch` hooks never run, matching
+  `gateway validate`, `gateway doctor`, and every client adapter.
+  `gateway start --watch` treats an `enabled` toggle as a membership
+  change and disconnects/reconnects accordingly.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

@@ -54,9 +54,11 @@ colliding with other `_meta` producers (trace context, host tooling).
 ## Lifecycle
 
 Upstreams connect eagerly during startup (bounded parallelism) and lazily
-again on first use after a failure. Each connection is a long-lived
-`RunningService` held in gateway state; discovery refreshes the routing
-table. Shutdown cancels every upstream and removes the HTTP state file.
+again on first use after a failure. Disabled servers (`enabled = false`)
+are never connected — same as every client adapter. Each connection is a
+long-lived `RunningService` held in gateway state; discovery refreshes the
+routing table. Shutdown cancels every upstream and removes the HTTP state
+file.
 
 ## Hot reload (`--watch`)
 

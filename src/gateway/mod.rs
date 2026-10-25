@@ -674,6 +674,18 @@ fn upstream_input_schema(upstream: &Upstream, tool: &str) -> Arc<rmcp::model::Js
 // Runtime
 // ---------------------------------------------------------------------------
 
+/// The servers the gateway connects: profile selection minus disabled
+/// entries. `enabled = false` is client-side state — adapters omit those
+/// servers and the gateway never spawns them either.
+pub(crate) fn selected_for_gateway(
+    store: &RegistryStore,
+    profile: Option<&str>,
+) -> Result<BTreeMap<String, ServerDef>> {
+    let mut selected = crate::sync::selected_servers(store, profile)?;
+    selected.retain(|_, def| def.enabled);
+    Ok(selected)
+}
+
 /// Connect all upstreams from the registry and build initial routing.
 pub async fn build_state(
     paths: &CerberusPaths,
@@ -681,7 +693,7 @@ pub async fn build_state(
     secrets: SecretStore,
     profile: Option<&str>,
 ) -> Result<Arc<GatewayState>> {
-    let selected = crate::sync::selected_servers(store, profile)?;
+    let selected = selected_for_gateway(store, profile)?;
     let redact = collect_literal_secrets(&store.registry);
 
     let state = Arc::new(GatewayState {
@@ -1160,12 +1172,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Validate that a gateway can start: registry valid, upstreams reachable.
 pub fn validate_config(store: &RegistryStore, profile: Option<&str>) -> Result<Vec<String>> {
     crate::registry::validate::validate(&store.registry)?;
-    let selected = crate::sync::selected_servers(store, profile)?;
+    let selected = selected_for_gateway(store, profile)?;
     let mut warnings = Vec::new();
     for (name, def) in &selected {
-        if !def.enabled {
-            continue;
-        }
         match &def.transport {
             Transport::Stdio { command, .. } => {
                 if !executable_exists(command) {

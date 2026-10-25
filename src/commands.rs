@@ -1691,7 +1691,7 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
         GatewayCommand::Validate { profile } => {
             let store = load_store(ctx)?;
             validate::validate(&store.registry)?;
-            let servers = crate::sync::selected_servers(&store, profile.as_deref())?;
+            let servers = crate::gateway::selected_for_gateway(&store, profile.as_deref())?;
             if ctx.json {
                 ctx.emit_json(&serde_json::json!({
                     "valid": true,

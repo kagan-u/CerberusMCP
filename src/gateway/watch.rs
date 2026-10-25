@@ -120,7 +120,7 @@ pub(crate) fn spawn(
                 tracing::warn!(error = %e, "registry reload rejected; keeping the running configuration");
                 continue;
             }
-            let selected = match crate::sync::selected_servers(&store, profile.as_deref()) {
+            let selected = match super::selected_for_gateway(&store, profile.as_deref()) {
                 Ok(selected) => selected,
                 Err(e) => {
                     tracing::warn!(error = %e, "registry reload rejected; keeping the running configuration");

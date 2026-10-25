@@ -193,6 +193,30 @@ fn gateway_runs_use_and_inline_pre_launch_steps() {
 }
 
 #[test]
+fn gateway_never_runs_hooks_of_a_disabled_server() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let marker = root.path().join("marker-command.txt");
+    let disabled = format!(
+        "[servers.off]\n\
+         enabled = false\n\
+         pre_launch = [{{ use = \"prepare\" }}]\n\n\
+         [servers.off.transport]\n\
+         {transport}",
+        transport = shell_toml(&silent_server_argv()),
+    );
+    write_registry(root.path(), &disabled, &marker);
+
+    let sb = Sandbox { root };
+    // The state file is written only after build_state finished; a disabled
+    // server must have been filtered out long before its hooks could run.
+    let _gw = spawn_gateway(&sb);
+    assert!(
+        !sb.marker("marker-command.txt").exists(),
+        "hooks of a disabled server must never execute"
+    );
+}
+
+#[test]
 fn gateway_starts_even_when_a_pre_launch_step_fails() {
     let fail_step = if cfg!(windows) {
         "{ run = [\"cmd\", \"/C\", \"exit /b 9\"] }".to_string()
