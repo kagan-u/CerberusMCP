@@ -76,7 +76,6 @@ mod tests {
     use super::*;
     use crate::registry::schema::{ServerDef, ServerPolicy, Transport};
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
 
     fn sample() -> Registry {
         let mut reg = Registry::default();
@@ -88,7 +87,7 @@ mod tests {
                     command: "npx".into(),
                     args: vec!["-y".into(), "pkg".into()],
                     env: BTreeMap::new(),
-                    cwd: Some(PathBuf::from("~/src")),
+                    cwd: Some("~/src".into()),
                 },
                 mode: None,
                 tags: vec!["local".into()],

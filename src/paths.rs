@@ -119,6 +119,12 @@ impl CerberusPaths {
         self.data_dir.join("logs")
     }
 
+    /// Derived artifacts (compiled registry cache, future build products).
+    /// Everything under this directory can always be deleted safely.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.data_dir.join("cache")
+    }
+
     pub fn gateway_state_file(&self) -> PathBuf {
         self.state_dir().join("gateway.json")
     }
@@ -134,6 +140,7 @@ impl CerberusPaths {
             self.backups_dir(),
             self.state_dir(),
             self.logs_dir(),
+            self.cache_dir(),
         ] {
             std::fs::create_dir_all(&dir)
                 .map_err(|source| CerberusError::Write { path: dir, source })?;

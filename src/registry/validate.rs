@@ -166,7 +166,7 @@ pub fn validate_server_def(name: &str, def: &ServerDef) -> Result<()> {
             }
             validate_env_map_at(&format!("servers.{name}.transport.env"), env)?;
             if let Some(cwd) = cwd {
-                if cwd.as_os_str().is_empty() {
+                if cwd.is_empty() {
                     return Err(CerberusError::Validation(format!(
                         "servers.{name}.transport.cwd: must not be empty"
                     )));
@@ -294,7 +294,7 @@ fn validate_hook_step(location: &str, step: &HookStep) -> Result<()> {
         }
     }
     if let Some(cwd) = &step.cwd {
-        if cwd.as_os_str().is_empty() {
+        if cwd.is_empty() {
             return Err(CerberusError::Validation(format!(
                 "{location}.cwd: must not be empty"
             )));
@@ -331,7 +331,7 @@ pub fn validate_command(name: &str, command: &CommandDef) -> Result<()> {
         }
     }
     if let Some(cwd) = &command.cwd {
-        if cwd.as_os_str().is_empty() {
+        if cwd.is_empty() {
             return Err(CerberusError::Validation(format!(
                 "{base}.cwd: must not be empty"
             )));

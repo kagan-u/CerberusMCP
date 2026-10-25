@@ -191,6 +191,8 @@ pub enum ConfigCommand {
     Validate,
     /// Show the registry (secrets redacted).
     Show,
+    /// Compile the registry into the rkyv binary cache.
+    Compile,
 }
 
 #[derive(Debug, Subcommand)]

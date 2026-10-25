@@ -80,7 +80,7 @@ impl GeminiCliAdapter {
                     entry.insert("env".into(), Value::Object(mapped));
                 }
                 if let Some(cwd) = cwd {
-                    entry.insert("cwd".into(), json!(cwd.display().to_string()));
+                    entry.insert("cwd".into(), json!(cwd.to_string()));
                 }
                 if let Some(ms) = def.timeout_ms {
                     entry.insert("timeout".into(), json!(ms));

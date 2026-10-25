@@ -8,15 +8,17 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
 
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
 use serde::{Deserialize, Serialize};
 
 /// Current schema version understood by this build.
 pub const SCHEMA_VERSION: u32 = 2;
 
 /// Top-level registry document.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Registry {
     pub schema_version: u32,
@@ -52,14 +54,16 @@ impl Default for Registry {
 ///
 /// Commands are plain exec vectors — never an implicit shell. Runners that
 /// need shell semantics spell them out (`["sh", "-c", "..."]`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct CommandDef {
     /// Executable + arguments, executed directly (no shell).
     pub run: Vec<String>,
     /// Working directory; `~` is expanded to the user's home.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
+    pub cwd: Option<String>,
     /// Extra environment entries, resolved like transport env values.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, EnvValue>,
@@ -75,7 +79,9 @@ pub struct CommandDef {
 ///
 /// Either references a top-level command (`use`) or carries an inline argv
 /// (`run`) — exactly one of the two must be set.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct HookStep {
     /// Name of a `[commands.<name>]` entry to run.
@@ -86,7 +92,7 @@ pub struct HookStep {
     pub run: Option<Vec<String>>,
     /// Working directory; falls back to the server transport's cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<PathBuf>,
+    pub cwd: Option<String>,
     /// Extra environment entries, merged over the server launch env.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, EnvValue>,
@@ -102,7 +108,9 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     /// Default execution mode for servers that do not override it.
@@ -127,7 +135,19 @@ impl Settings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
     /// The client connects to the upstream server directly.
@@ -142,7 +162,9 @@ pub enum ExecutionMode {
 ///
 /// The gateway and the client adapters never read this block — it only
 /// records how the entry could be re-created or verified outside Cerberus.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct SourceDef {
     pub kind: SourceKind,
@@ -176,7 +198,18 @@ pub struct SourceDef {
 }
 
 /// Packaging system a source comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     Npm,
@@ -186,7 +219,9 @@ pub enum SourceKind {
 }
 
 /// One environment variable a server documents needing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct SourceEnv {
     pub name: String,
@@ -212,7 +247,9 @@ impl SourceDef {
 }
 
 /// A registered MCP server.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields)]
 pub struct ServerDef {
     #[serde(default = "default_true")]
@@ -256,7 +293,9 @@ impl ServerDef {
 
 /// Transport definition. Typed rather than a free-form map so invalid
 /// combinations fail validation instead of surfacing at connect time.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields, tag = "type", rename_all = "snake_case")]
 pub enum Transport {
     /// Launch a local process and speak MCP over its stdin/stdout.
@@ -267,7 +306,7 @@ pub enum Transport {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, EnvValue>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cwd: Option<PathBuf>,
+        cwd: Option<String>,
     },
     /// Connect to a remote MCP server over Streamable HTTP.
     Http {
@@ -305,7 +344,9 @@ impl Transport {
 /// A secret-bearing or plain configuration value.
 ///
 /// Credentials should never be embedded directly; use `env` or `secret_ref`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields, tag = "source", rename_all = "snake_case")]
 pub enum EnvValue {
     /// Read from an environment variable of the given name at launch time.
@@ -339,7 +380,9 @@ impl EnvValue {
 }
 
 /// HTTP header value, resolved from env/secret or literal.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, Archive, RkyvSerialize, RkyvDeserialize,
+)]
 #[serde(untagged)]
 pub enum HeaderValue {
     Resolved(EnvValue),
@@ -356,7 +399,17 @@ impl HeaderValue {
 }
 
 /// Per-server access policy evaluated by the gateway.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields, default)]
 pub struct ServerPolicy {
     /// When non-empty, only these tools may be called. Supports a trailing
@@ -377,7 +430,17 @@ impl ServerPolicy {
 }
 
 /// A named set of servers activated together.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+)]
 #[serde(deny_unknown_fields, default)]
 pub struct Profile {
     pub servers: Vec<String>,

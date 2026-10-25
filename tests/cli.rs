@@ -1105,3 +1105,155 @@ fn run_enforces_command_timeout() {
         .code(7)
         .stderr(predicate::str::contains("timed out"));
 }
+
+// ---------------------------------------------------------------------------
+// compiled cache
+// ---------------------------------------------------------------------------
+
+fn find_cbin(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|ext| ext == "cbin") {
+                out.push(p);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, &mut out);
+    out
+}
+
+#[test]
+fn config_compile_writes_cache_and_loads_from_it() {
+    let sb = Sandbox::new();
+    sb.init();
+    sb.add_stdio("fs");
+
+    let out = sb
+        .cmd()
+        .args(["config", "compile", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    let cache = PathBuf::from(v["cache"].as_str().expect("cache path"));
+    assert!(cache.is_file(), "compile must write the cache file");
+    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["cache_rev"], 1);
+    assert!(v["payload_bytes"].as_u64().unwrap() > 0);
+    assert!(v["container_bytes"].as_u64().unwrap() > v["payload_bytes"].as_u64().unwrap());
+
+    // A load that hits the cache must not rewrite it.
+    let m1 = fs::metadata(&cache).unwrap().modified().unwrap();
+    sb.cmd()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fs"));
+    let m2 = fs::metadata(&cache).unwrap().modified().unwrap();
+    assert_eq!(m1, m2, "cache hit must not rewrite the cache file");
+
+    // `config path` reports the cache directory too.
+    let out = sb
+        .cmd()
+        .args(["config", "path", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let paths: Value = serde_json::from_slice(&out).unwrap();
+    assert!(
+        paths["cache_dir"].as_str().unwrap().ends_with("cache"),
+        "cache_dir: {}",
+        paths["cache_dir"]
+    );
+
+    // Editing the source invalidates the cache: the next load recompiles
+    // (observable as a rewritten cache file) and still serves correct data.
+    sb.add_stdio("second");
+    let m3 = fs::metadata(&cache).unwrap().modified().unwrap();
+    sb.cmd()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("second"));
+    let m4 = fs::metadata(&cache).unwrap().modified().unwrap();
+    assert_ne!(m3, m4, "an edited source must force a cache recompile");
+}
+
+#[test]
+fn corrupt_cache_falls_back_to_parsing_the_source() {
+    let sb = Sandbox::new();
+    sb.init();
+    sb.add_stdio("fs");
+    let out = sb
+        .cmd()
+        .args(["config", "compile", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: Value = serde_json::from_slice(&out).unwrap();
+    let cache = PathBuf::from(v["cache"].as_str().unwrap());
+
+    // Flip a payload byte: the payload-hash guard must reject the file and
+    // the load must silently fall back to parsing conf.cerberus.
+    let mut bytes = fs::read(&cache).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    fs::write(&cache, &bytes).unwrap();
+    sb.cmd()
+        .args(["config", "validate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"));
+
+    // The fallback recompiles, so the very next load is healthy again.
+    sb.cmd()
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("fs"));
+    let reparsed = fs::read(&cache).unwrap();
+    assert_ne!(
+        reparsed.last(),
+        bytes.last(),
+        "fallback must rewrite the cache"
+    );
+}
+
+#[test]
+fn no_cache_env_disables_cache_writes() {
+    let sb = Sandbox::new();
+    sb.init();
+    sb.add_stdio("fs");
+    // Drop anything a prior (non-sandboxed) step may have produced.
+    let cache_dir = sb.path("data/cache");
+    let _ = fs::remove_dir_all(&cache_dir);
+
+    sb.cmd()
+        .env("CERBERUS_NO_CACHE", "1")
+        .args(["config", "validate"])
+        .assert()
+        .success();
+    assert!(
+        find_cbin(&sb.path("data")).is_empty(),
+        "CERBERUS_NO_CACHE=1 must not write cache files"
+    );
+
+    // The explicit compile subcommand always builds (it is not gated).
+    sb.cmd()
+        .env("CERBERUS_NO_CACHE", "1")
+        .args(["config", "compile"])
+        .assert()
+        .success();
+    assert_eq!(find_cbin(&sb.path("data")).len(), 1);
+}

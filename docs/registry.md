@@ -10,7 +10,7 @@ registry from either.
 | --- | --- |
 | `CERBERUS_CONFIG_DIR/conf.cerberus` | the registry (TOML) |
 | `CERBERUS_CONFIG_FILE` | exact registry file path (overrides the dir) |
-| `CERBERUS_DATA_DIR` | backups, sync state, logs, registry search cache |
+| `CERBERUS_DATA_DIR` | backups, sync state, logs, registry search cache, compiled registry cache |
 | `CERBERUS_REGISTRY_URL` | registry endpoint used by `search`/`install` |
 
 **Legacy installs:** an existing `cerberus.yaml` (`schema_version: 0/1`) is
@@ -65,6 +65,30 @@ description = "everything for local development"
 
 Validation is strict: unknown fields are rejected (`deny_unknown_fields`)
 everywhere, so a typo fails at load time instead of being silently ignored.
+
+## Compiled cache
+
+Parsing the TOML document happens once; the result is also compiled into a
+**derived binary snapshot** (rkyv) at
+`<data>/cache/registry-<source-path-hash>.cbin` so subsequent loads skip text
+parsing entirely.
+
+- **Derived only.** The cache is never an input of record — delete it at any
+  time and the next load rebuilds it. `cerberus config compile` builds it
+  explicitly and prints what was written (`--json` reports sizes, FNV-1a
+  fingerprints, the schema version, and the cache revision); `cerberus config
+  path` reports the cache directory.
+- **Never masks errors.** Only registries that pass validation are compiled,
+  so a cache hit cannot make an invalid configuration look valid.
+- **Invalidation is layered** — every guard must pass before the snapshot is
+  used: the container header (magic `CBIN`, schema version, cache revision,
+  build version), the source stat (mtime + length), an FNV-1a hash of the
+  source content, an FNV-1a hash of the payload, and finally rkyv/bytecheck
+  validation of the archived graph. Any failure — including a truncated or
+  corrupt cache file — falls back silently to parsing the document.
+- **`CERBERUS_NO_CACHE=1`** disables both reads and writes. The explicit
+  `config compile` subcommand still builds, since producing the file is the
+  point of that command.
 
 ## Commands and pre-launch hooks
 

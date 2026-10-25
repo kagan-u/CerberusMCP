@@ -86,7 +86,7 @@ pub fn build_command(
     cmd.stderr(Stdio::inherit());
 
     if let Some(cwd) = cwd {
-        cmd.current_dir(crate::paths::expand_tilde(cwd));
+        cmd.current_dir(crate::paths::expand_tilde(std::path::Path::new(cwd)));
     }
 
     if !policy.inherit {

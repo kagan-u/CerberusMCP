@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepts either format (detected by content), and `cerberus init` refuses to
   overwrite a legacy `cerberus.yaml` without `--force`.
 
+- Compiled registry cache: a load parses `conf.cerberus` once and compiles
+  an rkyv snapshot under `<data>/cache/registry-*.cbin`; later loads verify
+  the container header, the source stat, and FNV-1a hashes of both source
+  and payload, then serve the snapshot without parsing TOML. The cache is
+  derived-only (safe to delete, rebuilt on demand), only ever written for
+  validated registries, and falls back silently to parsing on any mismatch.
+  `CERBERUS_NO_CACHE=1` disables reads and writes;
+  `cerberus config compile [--json]` builds and inspects it explicitly;
+  `config path` reports the cache directory.
+
 ### Changed
 
 - The default registry path is `<config dir>/conf.cerberus`. An existing

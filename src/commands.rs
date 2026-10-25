@@ -16,7 +16,7 @@ use crate::registry::schema::{
     EnvValue, ExecutionMode, Profile, Registry, SCHEMA_VERSION, ServerDef, ServerPolicy, SourceDef,
     Transport,
 };
-use crate::registry::{RegistryStore, atomic_write, validate};
+use crate::registry::{RegistryStore, archive, atomic_write, validate};
 
 pub async fn dispatch(ctx: &Ctx, command: Command) -> Result<i32> {
     match command {
@@ -154,6 +154,7 @@ async fn cmd_config(ctx: &Ctx, command: ConfigCommand) -> Result<i32> {
                 data_dir: PathBuf,
                 backups: PathBuf,
                 logs: PathBuf,
+                cache_dir: PathBuf,
             }
             let paths = Paths {
                 registry: ctx.paths.registry_file.clone(),
@@ -161,6 +162,7 @@ async fn cmd_config(ctx: &Ctx, command: ConfigCommand) -> Result<i32> {
                 data_dir: ctx.paths.data_dir.clone(),
                 backups: ctx.paths.backups_dir(),
                 logs: ctx.paths.logs_dir(),
+                cache_dir: ctx.paths.cache_dir(),
             };
             if ctx.json {
                 ctx.emit_json(&paths);
@@ -170,6 +172,7 @@ async fn cmd_config(ctx: &Ctx, command: ConfigCommand) -> Result<i32> {
                 ctx.status("Data dir", &paths.data_dir.display().to_string());
                 ctx.status("Backups", &paths.backups.display().to_string());
                 ctx.status("Logs", &paths.logs.display().to_string());
+                ctx.status("Cache", &paths.cache_dir.display().to_string());
             }
             Ok(ExitCode::Success as i32)
         }
@@ -231,6 +234,38 @@ async fn cmd_config(ctx: &Ctx, command: ConfigCommand) -> Result<i32> {
                     crate::registry::RegistryFormat::Yaml => redact_yaml(&text),
                 };
                 ctx.out(&redacted);
+            }
+            Ok(ExitCode::Success as i32)
+        }
+        ConfigCommand::Compile => {
+            let store = load_store(ctx)?;
+            // Explicit compilation is never gated by CERBERUS_NO_CACHE: the
+            // point of this subcommand is to produce and inspect the file.
+            let info = archive::compile_cache(
+                &ctx.paths,
+                &store.path,
+                &store.registry,
+                store.content_hash,
+            )?;
+            if ctx.json {
+                ctx.emit_json(&serde_json::json!({
+                    "source": store.path,
+                    "cache": info.path,
+                    "container_bytes": info.container_bytes,
+                    "payload_bytes": info.payload_bytes,
+                    "source_fnv": format!("{:016x}", info.source_fnv),
+                    "payload_fnv": format!("{:016x}", info.payload_fnv),
+                    "schema_version": store.registry.schema_version,
+                    "cache_rev": archive::CACHE_REV,
+                }));
+            } else {
+                ctx.status(
+                    &info.path.display().to_string(),
+                    &format!(
+                        "compiled {} B (payload {} B, schema v{})",
+                        info.container_bytes, info.payload_bytes, store.registry.schema_version
+                    ),
+                );
             }
             Ok(ExitCode::Success as i32)
         }
@@ -370,7 +405,7 @@ async fn cmd_run(ctx: &Ctx, name: Option<String>, extra: Vec<String>) -> Result<
         child.env(key, secrets.resolve_env_value(value)?);
     }
     if let Some(cwd) = &command.cwd {
-        child.current_dir(crate::paths::expand_tilde(cwd));
+        child.current_dir(crate::paths::expand_tilde(std::path::Path::new(cwd)));
     }
 
     // `--json` captures the child's output so the final JSON document stays

@@ -151,7 +151,7 @@ impl ClineAdapter {
                     entry.insert("env".into(), Value::Object(resolved));
                 }
                 if let Some(cwd) = cwd {
-                    entry.insert("cwd".into(), json!(cwd.display().to_string()));
+                    entry.insert("cwd".into(), json!(cwd.to_string()));
                 }
                 // Registry timeout_ms → Cline timeout seconds.
                 if let Some(ms) = def.timeout_ms {

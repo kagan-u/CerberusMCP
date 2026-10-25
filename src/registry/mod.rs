@@ -1,5 +1,6 @@
 //! Registry load/save and CRUD operations.
 
+pub mod archive;
 pub mod catalog;
 pub mod migrate;
 pub mod schema;
@@ -74,7 +75,20 @@ impl RegistryStore {
     pub fn load_with_migration(paths: &CerberusPaths) -> Result<Self> {
         let primary = &paths.registry_file;
         if primary.exists() {
-            return Self::load(primary);
+            // Compiled-cache fast path: a valid snapshot skips TOML parsing
+            // entirely (see `archive` for the staleness guards). Any miss
+            // falls through to a full parse, which then recompiles the
+            // cache best-effort.
+            if let Some((registry, content_hash)) = archive::try_load_cache(paths, primary) {
+                return Ok(Self {
+                    path: primary.to_path_buf(),
+                    registry,
+                    content_hash,
+                });
+            }
+            let store = Self::load(primary)?;
+            archive::write_cache(paths, primary, &store.registry, store.content_hash);
+            return Ok(store);
         }
         let is_default_name =
             primary.file_name().and_then(|n| n.to_str()) == Some(crate::paths::REGISTRY_FILE_NAME);
@@ -343,10 +357,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Stable content fingerprint used for change detection (FNV-1a, 64-bit).
 pub fn hash_text(text: &str) -> u64 {
+    hash_bytes(text.as_bytes())
+}
+
+/// FNV-1a 64 over raw bytes: source and cache-payload fingerprints.
+pub fn hash_bytes(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;
-    for b in text.as_bytes() {
+    for b in bytes {
         hash ^= *b as u64;
         hash = hash.wrapping_mul(PRIME);
     }

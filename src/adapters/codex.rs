@@ -107,7 +107,7 @@ impl CodexAdapter {
                     );
                 }
                 if let Some(cwd) = cwd {
-                    table.insert("cwd".into(), TomlValue::String(cwd.display().to_string()));
+                    table.insert("cwd".into(), TomlValue::String(cwd.to_string()));
                 }
                 if let Some(ms) = def.startup_timeout_ms {
                     table.insert("startup_timeout_ms".into(), TomlValue::Integer(ms as i64));

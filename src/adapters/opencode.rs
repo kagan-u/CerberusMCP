@@ -95,7 +95,7 @@ impl OpenCodeAdapter {
                     entry.insert("environment".into(), Value::Object(environment));
                 }
                 if let Some(cwd) = cwd {
-                    entry.insert("cwd".into(), json!(cwd.display().to_string()));
+                    entry.insert("cwd".into(), json!(cwd.to_string()));
                 }
                 apply_enablement(&mut entry, enabled, generation);
                 if generation == 1 {
