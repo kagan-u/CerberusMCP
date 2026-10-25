@@ -14,6 +14,7 @@
 //! forwarded (documented limitation in docs/protocol-compatibility.md).
 
 mod hooks;
+mod watch;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -228,12 +229,24 @@ pub struct GatewayState {
     pub call_timeout: Duration,
     pub startup_timeout: Duration,
     pub semaphore: Arc<Semaphore>,
-    pub redact: Vec<String>,
+    /// Literal secrets from the registry, for error redaction. Swapped by
+    /// `--watch` reloads; a std lock because guards never cross an await.
+    pub redact: std::sync::RwLock<Vec<String>>,
     /// Top-level `[commands.*]`, resolved for `pre_launch` `use` steps.
-    pub commands: BTreeMap<String, CommandDef>,
+    /// Swapped by `--watch` reloads; an async lock because read guards are
+    /// held across the connect awaits below.
+    pub commands: RwLock<BTreeMap<String, CommandDef>>,
 }
 
 impl GatewayState {
+    /// Snapshot of the redaction list (cloned so callers never hold a guard).
+    fn redact_list(&self) -> Vec<String> {
+        self.redact
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     async fn connect_upstream(
         server: &str,
         def: &ServerDef,
@@ -358,14 +371,8 @@ impl GatewayHandler {
             .ok_or_else(|| CerberusError::ServerNotFound {
                 name: server.to_string(),
             })?;
-        match GatewayState::connect_upstream(
-            server,
-            &def,
-            &self.state.secrets,
-            &self.state.commands,
-        )
-        .await
-        {
+        let commands = self.state.commands.read().await;
+        match GatewayState::connect_upstream(server, &def, &self.state.secrets, &commands).await {
             Ok(service) => {
                 let upstream = upstreams.get_mut(server).expect("checked above");
                 // Re-discover tools.
@@ -428,7 +435,7 @@ impl GatewayHandler {
     }
 
     fn redact(&self, text: &str) -> String {
-        redact_secrets(text, &self.state.redact)
+        redact_secrets(text, &self.state.redact_list())
     }
 }
 
@@ -687,8 +694,8 @@ pub async fn build_state(
         call_timeout: Duration::from_millis(DEFAULT_CALL_TIMEOUT_MS),
         startup_timeout: Duration::from_millis(DEFAULT_STARTUP_TIMEOUT_MS),
         semaphore: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENCY)),
-        redact,
-        commands: store.registry.commands.clone(),
+        redact: std::sync::RwLock::new(redact),
+        commands: RwLock::new(store.registry.commands.clone()),
     });
 
     // Register policies and empty upstream slots first so failures are
@@ -727,8 +734,8 @@ pub async fn build_state(
                 upstreams.get(&name).map(|u| u.def.clone())
             };
             let Some(def) = def else { return };
-            match GatewayState::connect_upstream(&name, &def, &state.secrets, &state.commands).await
-            {
+            let commands = state.commands.read().await;
+            match GatewayState::connect_upstream(&name, &def, &state.secrets, &commands).await {
                 Ok(service) => {
                     let tools = match service.list_all_tools().await {
                         Ok(tools) => tools
@@ -829,7 +836,7 @@ pub async fn status_snapshot(
                 last_error: u
                     .last_error
                     .clone()
-                    .map(|e| redact_secrets(&e, &state.redact)),
+                    .map(|e| redact_secrets(&e, &state.redact_list())),
             })
             .collect(),
         tools: routing.len(),
@@ -855,6 +862,7 @@ fn write_state_file(paths: &CerberusPaths, snapshot: &GatewayStatusSnapshot) -> 
 }
 
 /// Run the gateway in the foreground until ctrl-c.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_foreground(
     ctx: &Ctx,
     store: &RegistryStore,
@@ -863,6 +871,7 @@ pub async fn run_foreground(
     allow_remote: bool,
     token: Option<&str>,
     profile: Option<&str>,
+    watch: bool,
 ) -> Result<i32> {
     // Network exposure guard. Fail closed: only exact loopback IPs (the whole
     // 127.0.0.0/8 block, ::1) and `localhost` count; every other host —
@@ -888,6 +897,18 @@ pub async fn run_foreground(
     }
 
     let state = build_state(&ctx.paths, store, SecretStore::default(), profile).await?;
+
+    // Opt-in registry hot reload: polls the source file and reconciles
+    // per-server changes; cancelled together with either serve path.
+    let watch_ct = tokio_util::sync::CancellationToken::new();
+    if watch {
+        watch::spawn(
+            state.clone(),
+            profile.map(str::to_string),
+            store.content_hash,
+            watch_ct.clone(),
+        );
+    }
 
     {
         let upstreams = state.upstreams.lock().await;
@@ -917,6 +938,15 @@ pub async fn run_foreground(
         if transport == "http" {
             status("Bind", bind);
         }
+        if watch {
+            status(
+                "Registry watch",
+                &format!(
+                    "conf.cerberus (every {} ms)",
+                    watch::WATCH_INTERVAL.as_millis()
+                ),
+            );
+        }
         line("");
         for u in upstreams.values() {
             let mark = if u.service.is_some() {
@@ -931,7 +961,7 @@ pub async fn run_foreground(
                 cyan(&u.tools.len().to_string()),
                 u.last_error
                     .as_ref()
-                    .map(|e| format!("  {}", dim(&redact_secrets(e, &state.redact))))
+                    .map(|e| format!("  {}", dim(&redact_secrets(e, &state.redact_list()))))
                     .unwrap_or_default()
             ));
         }
@@ -941,15 +971,18 @@ pub async fn run_foreground(
     }
 
     match transport {
-        "stdio" => run_stdio(state).await,
-        "http" => run_http(state, bind, token, allow_remote).await,
+        "stdio" => run_stdio(state, watch_ct).await,
+        "http" => run_http(state, bind, token, allow_remote, watch_ct).await,
         other => Err(CerberusError::Validation(format!(
             "unknown gateway transport `{other}` (expected stdio or http)"
         ))),
     }
 }
 
-async fn run_stdio(state: Arc<GatewayState>) -> Result<i32> {
+async fn run_stdio(
+    state: Arc<GatewayState>,
+    watch_ct: tokio_util::sync::CancellationToken,
+) -> Result<i32> {
     let paths = state.paths.clone();
     let handler = GatewayHandler::new(state.clone());
     let ct = tokio_util::sync::CancellationToken::new();
@@ -983,6 +1016,9 @@ async fn run_stdio(state: Arc<GatewayState>) -> Result<i32> {
         let _ = waiting.await;
     }
 
+    // Stop the registry watcher before tearing upstreams down.
+    watch_ct.cancel();
+
     // Release upstreams cleanly.
     let mut upstreams = state.upstreams.lock().await;
     for u in upstreams.values_mut() {
@@ -1001,6 +1037,7 @@ async fn run_http(
     bind: &str,
     token: Option<&str>,
     allow_remote: bool,
+    watch_ct: tokio_util::sync::CancellationToken,
 ) -> Result<i32> {
     let paths = state.paths.clone();
     let state_factory_state = state.clone();
@@ -1065,6 +1102,7 @@ async fn run_http(
         .with_graceful_shutdown(async move {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("shutdown requested");
+            watch_ct.cancel();
             let mut upstreams = shutdown_state.upstreams.lock().await;
             for u in upstreams.values_mut() {
                 if let Some(s) = u.service.take() {

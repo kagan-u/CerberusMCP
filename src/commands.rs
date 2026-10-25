@@ -1582,6 +1582,7 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
             allow_remote,
             token,
             profile,
+            watch,
         } => {
             let store = load_store(ctx)?;
             validate::validate(&store.registry)?;
@@ -1593,6 +1594,7 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
                 allow_remote,
                 token.as_deref(),
                 profile.as_deref(),
+                watch,
             )
             .await
         }

@@ -340,6 +340,9 @@ pub enum GatewayCommand {
         /// Restrict to one profile.
         #[arg(long)]
         profile: Option<String>,
+        /// Watch conf.cerberus and hot-reload valid changes (default: off).
+        #[arg(long)]
+        watch: bool,
     },
     /// Show gateway status.
     Status,

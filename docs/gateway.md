@@ -58,6 +58,27 @@ again on first use after a failure. Each connection is a long-lived
 `RunningService` held in gateway state; discovery refreshes the routing
 table. Shutdown cancels every upstream and removes the HTTP state file.
 
+## Hot reload (`--watch`)
+
+`gateway start --watch` (default: off) polls the registry file's stat
+(mtime + size) every 500 ms and reconciles changes while serving:
+
+- **Touch-safe:** identical content (an mtime-only touch) changes nothing.
+- **Valid documents only:** a file that fails to parse or validate is
+  rejected with a warning — the running configuration stays in effect
+  until a valid write arrives.
+- **Per-server reconciliation:** only `transport`/`pre_launch` changes
+  cancel and reconnect an upstream (its pre-launch hooks re-run on that
+  reconnect). Policy, tags, mode, description, and similar edits are
+  swapped in place while the live connection stays up. Servers entering or
+  leaving the profile are connected or disconnected.
+- **Always live:** the `[commands.*]` table, the secret redaction list,
+  and — without an explicit `--profile` — the active profile selection
+  follow every applied document.
+
+A rejected reload never touches live state; a tool call in flight against
+a server that gets reconnected fails with the normal upstream error.
+
 ## Pre-launch hooks
 
 A stdio server may declare `pre_launch` steps (documented in

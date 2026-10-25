@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CERBERUS_NO_CACHE=1` disables reads and writes;
   `cerberus config compile [--json]` builds and inspects it explicitly;
   `config path` reports the cache directory.
+- `gateway start --watch` (default: off): stat-only registry hot reload.
+  A background poll (500 ms) re-parses and re-validates `conf.cerberus`
+  whenever its mtime/size change; a touch that leaves the content
+  identical changes nothing, and a document that fails to parse or
+  validate is rejected with a warning while the running configuration
+  stays in effect. Reconciliation is per server: only `transport`/
+  `pre_launch` edits cancel and reconnect the upstream (re-running its
+  pre-launch hooks), everything else — policy, tags, mode, and similar —
+  is swapped in place with the connection left up, and profile membership
+  changes connect/disconnect. The `[commands.*]` table and the secret
+  redaction list always follow the applied document.
 
 ### Changed
 
