@@ -18,3 +18,6 @@ pub mod secrets;
 pub mod sync;
 
 pub use error::{CerberusError, ExitCode, Result};
+
+/// The CerberusMCP version (shared with embedded consumers such as the GUI).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

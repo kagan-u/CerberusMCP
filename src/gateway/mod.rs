@@ -889,6 +889,7 @@ pub async fn run_foreground(
     profile: Option<&str>,
     watch: bool,
     watch_interval: Option<u64>,
+    stop: tokio_util::sync::CancellationToken,
 ) -> Result<i32> {
     // Network exposure guard. Fail closed: only exact loopback IPs (the whole
     // 127.0.0.0/8 block, ::1) and `localhost` count; every other host —
@@ -989,8 +990,8 @@ pub async fn run_foreground(
     }
 
     match transport {
-        "stdio" => run_stdio(state, watch_ct, watch).await,
-        "http" => run_http(state, bind, token, allow_remote, watch_ct, watch).await,
+        "stdio" => run_stdio(state, watch_ct, watch, stop).await,
+        "http" => run_http(state, bind, token, allow_remote, watch_ct, watch, stop).await,
         other => Err(CerberusError::Validation(format!(
             "unknown gateway transport `{other}` (expected stdio or http)"
         ))),
@@ -1001,6 +1002,7 @@ async fn run_stdio(
     state: Arc<GatewayState>,
     watch_ct: tokio_util::sync::CancellationToken,
     watch: bool,
+    stop: tokio_util::sync::CancellationToken,
 ) -> Result<i32> {
     let paths = state.paths.clone();
     let handler = GatewayHandler::new(state.clone());
@@ -1021,6 +1023,10 @@ async fn run_stdio(
     let mut ended = false;
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutdown requested");
+            ct_watch.cancel();
+        }
+        _ = stop.cancelled() => {
             tracing::info!("shutdown requested");
             ct_watch.cancel();
         }
@@ -1058,6 +1064,7 @@ async fn run_http(
     allow_remote: bool,
     watch_ct: tokio_util::sync::CancellationToken,
     watch: bool,
+    stop: tokio_util::sync::CancellationToken,
 ) -> Result<i32> {
     let paths = state.paths.clone();
     let state_factory_state = state.clone();
@@ -1120,7 +1127,10 @@ async fn run_http(
     let shutdown_state = state.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = stop.cancelled() => {}
+            }
             tracing::info!("shutdown requested");
             watch_ct.cancel();
             let mut upstreams = shutdown_state.upstreams.lock().await;

@@ -1602,6 +1602,7 @@ async fn cmd_gateway(ctx: &Ctx, command: GatewayCommand) -> Result<i32> {
                 profile.as_deref(),
                 watch,
                 watch_interval,
+                tokio_util::sync::CancellationToken::new(),
             )
             .await
         }

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Desktop GUI** (`gui/`): a Tauri 2 + React app embedding the
+  CerberusMCP library — gateway dashboard (in-process start/stop/status
+  with `--watch`), full server registry editor (transports, policies,
+  pre-launch hooks, enable toggles), profiles/settings/commands
+  editing, `validate` + `doctor` diagnostics, and a live log view.
+- `cerberus_mcp::VERSION` for embedded consumers.
+- `gateway::run_foreground` accepts a `CancellationToken` so hosts (the
+  GUI) can stop an in-process gateway; CLI behavior (ctrl-c) is
+  unchanged.
+
+### Added
+
 - `gateway start --watch-interval <MS>` tunes the hot-reload poll
   interval (default: 500 ms).
 

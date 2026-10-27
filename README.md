@@ -214,6 +214,33 @@ Global flags: `--config FILE`, `--json`, `--quiet`, `--verbose`, `--debug`.
 Exit codes: `0` success, `1` failure, `2` usage, `3` invalid config, `4`
 conflict, `5` not found, `6` policy denied, `7` timeout, `8` unsupported.
 
+## Desktop app (GUI)
+
+`gui/` is a [Tauri 2](https://tauri.app) desktop app (React + TypeScript +
+Vite) that embeds the same library the CLI uses — same registry, same
+gateway, no shelling out:
+
+- **Dashboard** — start/stop the gateway in-process (HTTP transport) with
+  bind/token/profile/`--watch` options, live status (pid, bind, watch), and
+  the server table.
+- **Servers** — full registry editor: add/edit/delete servers, `enabled`
+  toggles, stdio/http transports (args, env bindings, headers, bearer),
+  policies, and pre-launch hook steps.
+- **Registry** — `[settings]`, profiles with membership checkboxes and the
+  active profile, and reusable `[commands.*]` entries.
+- **Diagnostics** — `validate` plus the full `doctor` sweep with severities.
+- **Logs** — live `tracing` stream (gateway lifecycle, registry reloads).
+
+```sh
+cd gui
+npm install
+npm run tauri dev     # development
+npm run tauri build   # release bundle
+```
+
+`CERBERUS_CONFIG_DIR` / `CERBERUS_DATA_DIR` are honored, so the GUI and
+the CLI always share the same `conf.cerberus`.
+
 ## Environment overrides
 
 | Variable | Effect |
