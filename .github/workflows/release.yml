@@ -81,21 +81,7 @@ jobs:
           cache-dependency-path: gui/package-lock.json
       - name: Sync GUI version with release tag
         shell: bash
-        run: |
-          case "$GITHUB_REF_NAME" in
-            v*) v="${GITHUB_REF_NAME#v}" ;;
-            *) v="$(jq -r .version gui/src-tauri/tauri.conf.json)" ;;
-          esac
-          echo "GUI version: $v"
-          jq --arg v "$v" '.version = $v' gui/src-tauri/tauri.conf.json > /tmp/tauri.conf.json
-          mv /tmp/tauri.conf.json gui/src-tauri/tauri.conf.json
-          python3 - "$v" <<'PY' > /dev/null
-          import re, sys
-          p = "gui/src-tauri/Cargo.toml"
-          s = open(p).read()
-          s = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', s, count=1)
-          open(p, "w").write(s)
-          PY
+        run: bash gui/scripts/release-sync-version.sh
       - name: Build bundles (universal)
         working-directory: gui
         env:
@@ -119,9 +105,90 @@ jobs:
             CerberusMCP_*_universal.dmg
           if-no-files-found: error
 
+  gui-windows:
+    name: gui (Windows .msi + .exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            gui/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Sync GUI version with release tag
+        shell: bash
+        run: bash gui/scripts/release-sync-version.sh
+      - name: Build bundles
+        working-directory: gui
+        shell: bash
+        run: |
+          npm ci
+          npx tauri build --bundles msi,nsis
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          cp gui/src-tauri/target/release/bundle/msi/*.msi .
+          cp gui/src-tauri/target/release/bundle/nsis/*-setup.exe .
+          ls -la ./*.msi ./*-setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerberus-gui-windows
+          path: |
+            *.msi
+            *-setup.exe
+          if-no-files-found: error
+
+  gui-linux:
+    name: gui (Linux .deb + .AppImage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            gui/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
+            patchelf fakeroot
+      - name: Sync GUI version with release tag
+        run: bash gui/scripts/release-sync-version.sh
+      - name: Build bundles
+        working-directory: gui
+        run: |
+          npm ci
+          npx tauri build --bundles deb,appimage
+      - name: Collect artifacts
+        run: |
+          cp gui/src-tauri/target/release/bundle/deb/*.deb .
+          cp gui/src-tauri/target/release/bundle/appimage/*.AppImage .
+          ls -la ./*.deb ./*.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerberus-gui-linux
+          path: |
+            *.deb
+            *.AppImage
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: [build, gui-macos]
+    needs: [build, gui-macos, gui-windows, gui-linux]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
@@ -136,3 +203,7 @@ jobs:
             cerberus-windows-x86_64.zip
             CerberusMCP_*_universal.app.tar.gz
             CerberusMCP_*_universal.dmg
+            *.msi
+            *-setup.exe
+            *.deb
+            *.AppImage
