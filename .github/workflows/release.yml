@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -60,9 +61,68 @@ jobs:
           path: cerberus-${{ matrix.name }}.${{ matrix.archive }}
           if-no-files-found: error
 
+  gui-macos:
+    name: gui (macOS .app + .dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            gui/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Sync GUI version with release tag
+        shell: bash
+        run: |
+          case "$GITHUB_REF_NAME" in
+            v*) v="${GITHUB_REF_NAME#v}" ;;
+            *) v="$(jq -r .version gui/src-tauri/tauri.conf.json)" ;;
+          esac
+          echo "GUI version: $v"
+          jq --arg v "$v" '.version = $v' gui/src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          mv /tmp/tauri.conf.json gui/src-tauri/tauri.conf.json
+          python3 - "$v" <<'PY' > /dev/null
+          import re, sys
+          p = "gui/src-tauri/Cargo.toml"
+          s = open(p).read()
+          s = re.sub(r'(?m)^version = ".*"$', f'version = "{sys.argv[1]}"', s, count=1)
+          open(p, "w").write(s)
+          PY
+      - name: Build bundles (universal)
+        working-directory: gui
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm ci
+          npx tauri build --target universal-apple-darwin
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          v="$(jq -r .version gui/src-tauri/tauri.conf.json)"
+          base="gui/src-tauri/target/universal-apple-darwin/release/bundle"
+          tar -C "$base/macos" -czf "CerberusMCP_${v}_universal.app.tar.gz" CerberusMCP.app
+          mv "$base/dmg/CerberusMCP_${v}_universal.dmg" .
+          ls -la CerberusMCP_*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cerberus-gui-macos
+          path: |
+            CerberusMCP_*_universal.app.tar.gz
+            CerberusMCP_*_universal.dmg
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    needs: [build, gui-macos]
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -74,3 +134,5 @@ jobs:
           files: |
             cerberus-linux-x86_64.tar.gz
             cerberus-windows-x86_64.zip
+            CerberusMCP_*_universal.app.tar.gz
+            CerberusMCP_*_universal.dmg

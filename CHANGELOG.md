@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `--watch`), full server registry editor (transports, policies,
   pre-launch hooks, enable toggles), profiles/settings/commands
   editing, `validate` + `doctor` diagnostics, and a live log view.
+- Release workflow ships the macOS GUI bundle: `CerberusMCP.app`
+  (tar.gz, universal binary) and a `.dmg`, version-synced to the tag.
 - `cerberus_mcp::VERSION` for embedded consumers.
 - `gateway::run_foreground` accepts a `CancellationToken` so hosts (the
   GUI) can stop an in-process gateway; CLI behavior (ctrl-c) is
