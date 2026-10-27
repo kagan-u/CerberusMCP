@@ -148,16 +148,23 @@ pub fn process_alive(pid: i32) -> bool {
     }
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE,
+        };
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
-        if !handle.is_null() {
-            CloseHandle(handle);
-            return true;
+        if handle.is_null() {
+            return GetLastError() == ERROR_ACCESS_DENIED;
         }
-        GetLastError() == ERROR_ACCESS_DENIED
+        // OpenProcess succeeds for an exited process while *some* handle to it
+        // is still open (e.g. a parent holding its child handle). The exit code
+        // tells us whether it actually terminated: only STILL_ACTIVE is alive.
+        let mut code: u32 = 0;
+        let queried = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        queried && code == STILL_ACTIVE as u32
     }
     #[cfg(not(any(unix, windows)))]
     {
