@@ -66,16 +66,10 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
       - name: Configure
         working-directory: gui
-        shell: bash
-        run: |
-          export PATH="$(echo "$PATH" | tr ':' '\n' | grep -vi '/Git/usr/bin' | paste -sd:)"
-          cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build
         working-directory: gui
-        shell: bash
-        run: |
-          export PATH="$(echo "$PATH" | tr ':' '\n' | grep -vi '/Git/usr/bin' | paste -sd:)"
-          cmake --build build-ci --config Release --target CerberusMCP
+        run: cmake --build build-ci --config Release --target CerberusMCP
 
   msrv:
     name: MSRV (1.88)
