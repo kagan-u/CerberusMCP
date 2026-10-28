@@ -30,7 +30,7 @@ struct Config
 
     // Discord Rich Presence
     bool        discordRpc = true;
-    std::string discordId;            // application id ("" = disabled)
+    std::string discordId = "1564987469475221624";  // application id ("" = disabled)
 };
 
 namespace config {

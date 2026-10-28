@@ -56,6 +56,7 @@ void Load()
     if (c.gwBind.empty()) c.gwBind = "127.0.0.1:8713";
     if (c.gwWatchMs < 100 || c.gwWatchMs > 60000) c.gwWatchMs = 500;
     if (c.timeout < 3 || c.timeout > 300) c.timeout = 15;
+    if (c.discordId.empty()) c.discordId = "1564987469475221624";  // shipped default app
 }
 
 void Save()
