@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>            <string>CerberusMCP</string>
+  <key>CFBundleDisplayName</key>     <string>CerberusMCP</string>
+  <key>CFBundleIdentifier</key>      <string>com.kagancunal.cerberus-mcp</string>
+  <key>CFBundleVersion</key>         <string>@CERBERUS_GUI_VERSION@</string>
+  <key>CFBundleShortVersionString</key> <string>@CERBERUS_GUI_VERSION@</string>
+  <key>CFBundleExecutable</key>      <string>CerberusMCP</string>
+  <key>CFBundlePackageType</key>     <string>APPL</string>
+  <key>CFBundleIconFile</key>        <string>logo.png</string>
+  <key>NSHighResolutionCapable</key> <true/>
+  <key>NSPrincipalClass</key>        <string>NSApplication</string>
+  <key>LSApplicationCategoryType</key> <string>public.app-category.developer-tools</string>
+</dict>
+</plist>

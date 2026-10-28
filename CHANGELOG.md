@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **GUI rewritten in C++ / Dear ImGui.** The Tauri 2 + React desktop app
+  (`gui/` web stack) is gone; `gui/` is now a native C++17 app built
+  with CMake and Dear ImGui (GLFW + OpenGL3 on macOS/Linux, D3D11 +
+  Win32 on Windows). It links the Rust core as a static library through
+  a new C ABI (`src/ffi.rs`, `core::*` wrappers in
+  `gui/src/cerberus_api.h`): real registry editing (stdio/http
+  transports, env bindings, tags, timeouts, enable toggles), gateway
+  start/stop with bind/token/watch/profile, `doctor` diagnostics, and
+  the live `tracing` log stream. Dashboard quick-launch connects to
+  enabled servers only; disabled servers explain why. Seven locales
+  (TR/EN/DE/FR/ES/RU/PT) throughout.
+
+### Removed
+
+- Tauri 2 + React + Vite GUI stack (`gui/src-tauri/`, `gui/src/`,
+  `gui/package.json`), its five example game-menu executables, and
+  dead platform helpers (`MenuExeName`, `LaunchProcess`,
+  `LoadTextureFile`, `TakeDroppedFile`, `CopyFileTo`).
+
 ## [0.4.0] - 2026-10-27
 
 ### Added

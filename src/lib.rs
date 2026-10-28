@@ -8,6 +8,7 @@ pub mod cli;
 pub mod commands;
 pub mod diagnostics;
 pub mod error;
+pub mod ffi;
 pub mod gateway;
 pub mod paths;
 pub mod policy;

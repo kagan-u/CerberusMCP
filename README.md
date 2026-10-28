@@ -216,26 +216,25 @@ conflict, `5` not found, `6` policy denied, `7` timeout, `8` unsupported.
 
 ## Desktop app (GUI)
 
-`gui/` is a [Tauri 2](https://tauri.app) desktop app (React + TypeScript +
-Vite) that embeds the same library the CLI uses — same registry, same
-gateway, no shelling out:
+`gui/` is a native desktop app written in C++17 with
+[Dear ImGui](https://github.com/ocornut/imgui) (GLFW + OpenGL on
+macOS/Linux, D3D11 on Windows). It links the same Rust library the CLI
+uses — same registry, same gateway, no shelling out:
 
-- **Dashboard** — start/stop the gateway in-process (HTTP transport) with
-  bind/token/profile/`--watch` options, live status (pid, bind, watch), and
-  the server table.
-- **Servers** — full registry editor: add/edit/delete servers, `enabled`
+- **Dashboard** — start/stop the gateway in-process, live status, log
+  sparkline, doctor diagnostics, and quick launch from enabled servers.
+- **MCP Servers** — full registry editor: add/edit/delete servers, `enabled`
   toggles, stdio/http transports (args, env bindings, headers, bearer),
-  policies, and pre-launch hook steps.
-- **Registry** — `[settings]`, profiles with membership checkboxes and the
-  active profile, and reusable `[commands.*]` entries.
-- **Diagnostics** — `validate` plus the full `doctor` sweep with severities.
+  tags, and timeouts.
+- **Settings** — gateway bind/token/watch/profile, locale, accent, window
+  behavior.
 - **Logs** — live `tracing` stream (gateway lifecycle, registry reloads).
 
 ```sh
 cd gui
-npm install
-npm run tauri dev     # development
-npm run tauri build   # release bundle
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target CerberusMCP
+./build/CerberusMCP
 ```
 
 `CERBERUS_CONFIG_DIR` / `CERBERUS_DATA_DIR` are honored, so the GUI and

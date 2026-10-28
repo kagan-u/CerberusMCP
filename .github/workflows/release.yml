@@ -67,123 +67,93 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            gui/src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
-      - name: Sync GUI version with release tag
-        shell: bash
-        run: bash gui/scripts/release-sync-version.sh
-      - name: Build bundles (universal)
+      - name: Install build deps
+        run: brew install ninja glfw
+      - name: Configure + build
         working-directory: gui
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
-          npm ci
-          npx tauri build --target universal-apple-darwin
-      - name: Collect artifacts
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rel --target CerberusMCP
+      - name: Package .app + .dmg
         shell: bash
         run: |
-          v="$(jq -r .version gui/src-tauri/tauri.conf.json)"
-          base="gui/src-tauri/target/universal-apple-darwin/release/bundle"
-          tar -C "$base/macos" -czf "CerberusMCP_${v}_universal.app.tar.gz" CerberusMCP.app
-          mv "$base/dmg/CerberusMCP_${v}_universal.dmg" .
-          ls -la CerberusMCP_*
+          v="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_NAME" = "$GITHUB_REF" ] && v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          bash gui/scripts/package-macos.sh gui/build-rel "$v"
       - uses: actions/upload-artifact@v4
         with:
           name: cerberus-gui-macos
           path: |
-            CerberusMCP_*_universal.app.tar.gz
-            CerberusMCP_*_universal.dmg
+            CerberusMCP_*_macos.app.tar.gz
+            CerberusMCP_*_macos.dmg
           if-no-files-found: error
 
   gui-windows:
-    name: gui (Windows .msi + .exe)
+    name: gui (Windows portable zip)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            gui/src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
-      - name: Sync GUI version with release tag
-        shell: bash
-        run: bash gui/scripts/release-sync-version.sh
-      - name: Build bundles
+      - name: Install Ninja
+        run: choco install ninja -y
+      - name: Configure + build
         working-directory: gui
         shell: bash
         run: |
-          npm ci
-          npx tauri build --bundles msi,nsis
-      - name: Collect artifacts
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rel --target CerberusMCP
+      - name: Package
         shell: bash
         run: |
-          cp gui/src-tauri/target/release/bundle/msi/*.msi .
-          cp gui/src-tauri/target/release/bundle/nsis/*-setup.exe .
-          ls -la ./*.msi ./*-setup.exe
+          v="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_NAME" = "$GITHUB_REF" ] && v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          stage="CerberusMCP_${v}_windows-x86_64"
+          mkdir -p "$stage"
+          cp gui/build-rel/CerberusMCP.exe "$stage/"
+          cp -R gui/assets "$stage/assets"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          7z a "$stage.zip" "$stage"
+          ls -la "$stage.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: cerberus-gui-windows
-          path: |
-            *.msi
-            *-setup.exe
+          path: CerberusMCP_*_windows-x86_64.zip
           if-no-files-found: error
 
   gui-linux:
-    name: gui (Linux .deb + .AppImage)
+    name: gui (Linux portable tar.gz)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            gui/src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
-      - name: Tauri system dependencies
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
-            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
-            patchelf fakeroot
-      - name: Sync GUI version with release tag
-        run: bash gui/scripts/release-sync-version.sh
-      - name: Build bundles
+          sudo apt-get install -y libglfw3-dev libgl1-mesa-dev ninja-build
+      - name: Configure + build
         working-directory: gui
         run: |
-          npm ci
-          npx tauri build --bundles deb,appimage
-      - name: Collect artifacts
+          cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-rel --target CerberusMCP
+      - name: Package
+        shell: bash
         run: |
-          cp gui/src-tauri/target/release/bundle/deb/*.deb .
-          cp gui/src-tauri/target/release/bundle/appimage/*.AppImage .
-          ls -la ./*.deb ./*.AppImage
+          v="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_NAME" = "$GITHUB_REF" ] && v="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          stage="CerberusMCP_${v}_linux-x86_64"
+          mkdir -p "$stage"
+          cp gui/build-rel/CerberusMCP "$stage/"
+          cp -R gui/assets "$stage/assets"
+          cp README.md LICENSE CHANGELOG.md "$stage/"
+          tar -czf "$stage.tar.gz" "$stage"
+          ls -la "$stage.tar.gz"
       - uses: actions/upload-artifact@v4
         with:
           name: cerberus-gui-linux
-          path: |
-            *.deb
-            *.AppImage
+          path: CerberusMCP_*_linux-x86_64.tar.gz
           if-no-files-found: error
 
   release:
@@ -201,9 +171,7 @@ jobs:
           files: |
             cerberus-linux-x86_64.tar.gz
             cerberus-windows-x86_64.zip
-            CerberusMCP_*_universal.app.tar.gz
-            CerberusMCP_*_universal.dmg
-            *.msi
-            *-setup.exe
-            *.deb
-            *.AppImage
+            CerberusMCP_*_macos.app.tar.gz
+            CerberusMCP_*_macos.dmg
+            CerberusMCP_*_windows-x86_64.zip
+            CerberusMCP_*_linux-x86_64.tar.gz
