@@ -67,7 +67,14 @@ else()
 endif()
 
 # ---------------------------------------------------------------- loader
-add_executable(CerberusMCP
+# WIN32 -> GUI subsystem (wWinMain entry). Without it MSVC links a console
+# app and looks for main().
+if(WIN32)
+    add_executable(CerberusMCP WIN32)
+else()
+    add_executable(CerberusMCP)
+endif()
+target_sources(CerberusMCP PRIVATE
     ${LOADER_PLATFORM}
     src/app.cpp
     src/config.cpp
