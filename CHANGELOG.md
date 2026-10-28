@@ -7,26 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Highlights
+
+- **Native C++ / Dear ImGui desktop GUI.** The old Tauri 2 + React app is
+  gone. `gui/` is now a single native binary (GLFW + OpenGL3 on
+  macOS/Linux, D3D11 + Win32 on Windows) that links the Rust core as a
+  static library — no web stack, no shelling out.
+- **Real registry, not a mock.** Add, edit and delete MCP servers with
+  stdio/http transports, args, env bindings, tags, timeouts and enable
+  toggles — straight into the canonical `conf.cerberus` registry the CLI
+  reads.
+- **Gateway at your fingertips.** Start/stop the in-process gateway with
+  bind address, token, `--watch` and profile selection; live status on
+  the dashboard and in the sidebar.
+- **Diagnostics + live logs.** A full `doctor` sweep with severities, and
+  the `tracing` stream rendered live (gateway lifecycle, registry
+  reloads) with pause / autoscroll / clear.
+- **Connect flow.** Quick-launch an enabled server through a staged
+  loader (registry → validate → doctor → gateway → status) with real
+  progress and failure detail.
+- **Seven languages, one build.** TR, EN, DE, FR, ES, RU, PT throughout.
+- **Discord Rich Presence** on by default (app id
+  `1564987469475221624`), showing the current page or the server you are
+  connecting to.
+
 ### Changed
 
-- **GUI rewritten in C++ / Dear ImGui.** The Tauri 2 + React desktop app
-  (`gui/` web stack) is gone; `gui/` is now a native C++17 app built
-  with CMake and Dear ImGui (GLFW + OpenGL3 on macOS/Linux, D3D11 +
-  Win32 on Windows). It links the Rust core as a static library through
-  a new C ABI (`src/ffi.rs`, `core::*` wrappers in
-  `gui/src/cerberus_api.h`): real registry editing (stdio/http
-  transports, env bindings, tags, timeouts, enable toggles), gateway
-  start/stop with bind/token/watch/profile, `doctor` diagnostics, and
-  the live `tracing` log stream. Dashboard quick-launch connects to
-  enabled servers only; disabled servers explain why. Seven locales
-  (TR/EN/DE/FR/ES/RU/PT) throughout.
+- Release workflow now ships the C++ GUI on all three platforms: macOS
+  `.app` + `.dmg`, Windows portable `.zip`, Linux portable `.tar.gz`.
+- `crate-type` is now `["rlib", "staticlib"]` so the same crate serves
+  both the CLI and the GUI's static link.
 
 ### Removed
 
 - Tauri 2 + React + Vite GUI stack (`gui/src-tauri/`, `gui/src/`,
-  `gui/package.json`), its five example game-menu executables, and
-  dead platform helpers (`MenuExeName`, `LaunchProcess`,
-  `LoadTextureFile`, `TakeDroppedFile`, `CopyFileTo`).
+  `gui/package.json`), its five example game-menu executables, and dead
+  platform helpers (`MenuExeName`, `LaunchProcess`, `LoadTextureFile`,
+  `TakeDroppedFile`, `CopyFileTo`).
 
 ## [0.4.0] - 2026-10-27
 

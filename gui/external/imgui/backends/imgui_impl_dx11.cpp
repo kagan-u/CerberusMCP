@@ -43,6 +43,9 @@
 
 // DirectX
 #include <stdio.h>
+#include <windows.h>   // include first: on recent Windows SDKs d3d11.h can pull
+#include <rpc.h>       // rpcnsip.h before rpc.h, leaving RPC_STATUS undefined
+#include <rpcndr.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
 #ifdef _MSC_VER
