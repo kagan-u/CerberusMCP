@@ -104,6 +104,8 @@ jobs:
         working-directory: gui
         shell: bash
         run: |
+          # Git's /usr/bin/link.exe (coreutils) shadows MSVC's link.exe.
+          export PATH="$(echo "$PATH" | tr ':' '\n' | grep -vi '/Git/usr/bin' | paste -sd:)"
           cmake -S . -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build-rel --target CerberusMCP
       - name: Package
