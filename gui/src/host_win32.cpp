@@ -3,8 +3,7 @@
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 
-#include <rpc.h>   // must precede windows.h: WIN32_LEAN_AND_MEAN skips it, but rpcnsip.h needs it
-#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
 #include <dwmapi.h>
