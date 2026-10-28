@@ -61,6 +61,9 @@ jobs:
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
         run: choco install ninja -y
+      - name: MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Configure
         working-directory: gui
         run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release

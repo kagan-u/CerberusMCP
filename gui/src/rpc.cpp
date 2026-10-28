@@ -1,6 +1,7 @@
 #include "rpc.h"
 #include "config.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>

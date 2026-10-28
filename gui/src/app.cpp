@@ -897,12 +897,7 @@ void Home(ImVec2 a, ImVec2 b)
     PageHeader(ImVec2(x, y), w, hello, T(S_HOME_SUB));
 
     time_t now = time(nullptr);
-    tm lt;
-#if defined(_MSC_VER)
-    localtime_s(&lt, &now);
-#else
-    localtime_r(&now, &lt);
-#endif
+    tm lt = *localtime(&now);
     char clk[16], date[16];
     strftime(clk, sizeof(clk), "%H:%M:%S", &lt);
     strftime(date, sizeof(date), "%d.%m.%Y", &lt);
